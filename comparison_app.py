@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import pandas as pd
 import os
@@ -16,18 +14,19 @@ except ImportError:
 
 st.set_page_config(page_title="Đối chiếu FPT", layout="wide", page_icon="📊")
 
-st.title("📊 Đối chiếu dữ liệu Grab ")
+st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
 st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
 
 # --- GIAO DIỆN NHẬP LIỆU ---
 with st.container(border=True):
     col1, col2, col3 = st.columns([2, 2, 3])
+    file_types = ["csv", "xls", "xlsx"]
     with col1:
-        st.subheader("1. File Transport CSV")
-        uploaded_transport_file = st.file_uploader("Tải lên file CSV transport", type=["csv"], label_visibility="collapsed")
+        st.subheader("1. File Transport")
+        uploaded_transport_file = st.file_uploader("Tải lên file Transport", type=file_types, label_visibility="collapsed")
     with col2:
-        st.subheader("2. File Hóa đơn Excel")
-        uploaded_invoice_file = st.file_uploader("Tải lên file Excel hóa đơn", type=["xls", "xlsx"], label_visibility="collapsed")
+        st.subheader("2. File Hóa đơn")
+        uploaded_invoice_file = st.file_uploader("Tải lên file Hóa đơn", type=file_types, label_visibility="collapsed")
     with col3:
         st.subheader("3. Folder Báo cáo (.zip)")
         uploaded_zip_file = st.file_uploader("Tải lên file .zip của folder báo cáo", type=["zip"], label_visibility="collapsed")
@@ -36,11 +35,22 @@ with st.container(border=True):
 if uploaded_transport_file is not None and uploaded_invoice_file is not None:
     try:
         # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
-        df_transport = pd.read_csv(uploaded_transport_file, skiprows=7)
-        try:
-            df_invoice = pd.read_html(uploaded_invoice_file)[0]
-        except Exception:
-            df_invoice = pd.read_excel(uploaded_invoice_file, engine='xlrd')
+        # Đọc file transport (CSV hoặc Excel)
+        if uploaded_transport_file.name.endswith('.csv'):
+            df_transport = pd.read_csv(uploaded_transport_file, skiprows=7)
+        else:
+            df_transport = pd.read_excel(uploaded_transport_file, skiprows=7)
+
+        # Đọc file hóa đơn (CSV hoặc Excel)
+        if uploaded_invoice_file.name.endswith('.csv'):
+            df_invoice = pd.read_csv(uploaded_invoice_file)
+        elif uploaded_invoice_file.name.endswith('.xls'):
+            try: # Xử lý trường hợp file .xls thực chất là HTML
+                df_invoice = pd.read_html(uploaded_invoice_file)[0]
+            except Exception:
+                df_invoice = pd.read_excel(uploaded_invoice_file, engine='xlrd')
+        else: # .xlsx
+            df_invoice = pd.read_excel(uploaded_invoice_file)
 
         df_transport.columns = df_transport.columns.str.strip()
         df_invoice.columns = df_invoice.columns.str.strip()
@@ -53,7 +63,7 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
         # --- 2. HỢP NHẤT DỮ LIỆU CSV VÀ EXCEL ---
         matching_ids = list(set(df_transport['Booking ID'].dropna()) & set(df_invoice['Booking'].dropna()))
         if not matching_ids:
-            st.warning("Không tìm thấy Booking ID nào trùng khớp giữa file CSV và Excel.")
+            st.warning("Không tìm thấy Booking ID nào trùng khớp giữa hai file đầu vào.")
             st.stop()
 
         df_merged = pd.merge(df_transport[df_transport['Booking ID'].isin(matching_ids)], df_invoice[df_invoice['Booking'].isin(matching_ids)], left_on='Booking ID', right_on='Booking', suffixes=('_transport', '_invoice'))
@@ -140,4 +150,3 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
     except Exception as e:
         st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
         st.exception(e) # In ra chi tiết lỗi để debug
-
