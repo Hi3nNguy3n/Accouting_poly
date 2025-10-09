@@ -1,3 +1,4 @@
+# Copyright by hiennm22, LocTH5 - BM UDPM
 import streamlit as st
 import pandas as pd
 import os
@@ -16,6 +17,7 @@ st.set_page_config(page_title="Đối chiếu FPT", layout="wide", page_icon="�
 
 st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
 st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
+st.caption("Copyright by LocTH5, Hiennm22 - BM UDPM")
 
 # --- GIAO DIỆN NHẬP LIỆU ---
 with st.container(border=True):
