@@ -37,9 +37,9 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
         # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
         # Đọc file transport (CSV hoặc Excel)
         if uploaded_transport_file.name.endswith('.csv'):
-            df_transport = pd.read_csv(uploaded_transport_file, skiprows=7)
+            df_transport = pd.read_csv(uploaded_transport_file, skiprows=8)
         else:
-            df_transport = pd.read_excel(uploaded_transport_file, skiprows=7)
+            df_transport = pd.read_excel(uploaded_transport_file, skiprows=8)
 
         # Đọc file hóa đơn (CSV hoặc Excel)
         if uploaded_invoice_file.name.endswith('.csv'):
