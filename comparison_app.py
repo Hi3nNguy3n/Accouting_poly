@@ -36,7 +36,7 @@ def find_col(df, possibilities):
 def load_mapping_data():
     """Đọc file Excel mapping và trả về 2 dictionaries:
     1. Employee Name -> Đơn vị
-    2. Đơn vị -> Email (lấy email đầu tiên tìm thấy cho mỗi đơn vị)
+    2. Đơn vị -> List of Emails
     """
     try:
         df_mapping = pd.read_excel("FileMau/Tong hop _ Report.xlsx")
@@ -46,7 +46,8 @@ def load_mapping_data():
         df_mapping = df_mapping.dropna(subset=[name_col, unit_col])
         employee_to_unit_map = df_mapping.set_index(name_col)[unit_col].to_dict()
         df_email_map = df_mapping.dropna(subset=[email_col])
-        unit_to_email_map = df_email_map.drop_duplicates(subset=[unit_col], keep='first').set_index(unit_col)[email_col].to_dict()
+        # Group by unit and create a list of unique emails for each unit
+        unit_to_email_map = df_email_map.groupby(unit_col)[email_col].apply(lambda x: list(x.unique())).to_dict()
         return employee_to_unit_map, unit_to_email_map
     except FileNotFoundError:
         st.error("Lỗi: Không tìm thấy file mapping 'FileMau/Tong hop _ Report.xlsx'. Vui lòng đảm bảo file tồn tại.")
@@ -327,15 +328,19 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                         selected_unit_email = st.selectbox("Chọn đơn vị để gửi email", unique_units_for_select_email, key="email_unit_select")
 
                         if selected_unit_email:
-                            recipient_email = unit_to_email_map.get(selected_unit_email)
-                            if recipient_email: st.info(f"Bảng kê cho '{selected_unit_email}' sẽ được gửi đến: **{recipient_email}**")
-                            else: st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}'.")
+                            recipient_emails = unit_to_email_map.get(selected_unit_email, [])
+                            if recipient_emails:
+                                st.info(f"Bảng kê cho '{selected_unit_email}' sẽ được gửi đến các địa chỉ sau:")
+                                st.markdown(f"**{', '.join(recipient_emails)}**")
+                            else:
+                                st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}'.")
 
                             if st.button(f"📧 Gửi Email đến '{selected_unit_email}'", use_container_width=True, key="send_email_btn"):
-                                if not recipient_email:
+                                if not recipient_emails:
                                     st.error(f"Không thể gửi email: Không tìm thấy email cho đơn vị '{selected_unit_email}'.")
                                 else:
-                                    with st.spinner(f"Đang xác thực và gửi email đến {recipient_email}..."):
+                                    to_field = ", ".join(recipient_emails)
+                                    with st.spinner(f"Đang xác thực và gửi email đến {to_field}..."):
                                         try:
                                             creds = get_google_credentials(st.session_state.credentials_json_content)
                                             df_unit = df_merged[df_merged[unit_col] == selected_unit_email]
@@ -346,21 +351,31 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                             excel_filename = f"BangKe_{safe_unit_name}.xlsx"
                                             attachments = [{'data': excel_data_email, 'filename': excel_filename}]
 
-                                            # 2. Create raw PDF attachments (no zip)
-                                            df_unit_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                            if not df_unit_pdfs.empty:
-                                                st.info(f"Đính kèm {len(df_unit_pdfs)} file PDF riêng lẻ.")
-                                                for _, row in df_unit_pdfs.iterrows():
+                                            # 2. Create zipped PDF attachments for each employee
+                                            df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                            if not df_unit_with_pdfs.empty:
+                                                employee_groups = df_unit_with_pdfs.groupby('Employee Name')
+                                                st.info(f"Đang tạo và đính kèm {len(employee_groups)} file .zip (chứa PDF) cho từng nhân viên...")
+                                                for employee_name, employee_df in employee_groups:
+                                                    zip_buffer = io.BytesIO()
+                                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                        for _, row in employee_df.iterrows():
+                                                            pdf_filename = os.path.basename(row['pdf_filename'])
+                                                            zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                    
+                                                    safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                    zip_filename = f"{safe_employee_name}.zip"
+                                                    
                                                     attachments.append({
-                                                        'data': row['pdf_content'],
-                                                        'filename': os.path.basename(row['pdf_filename'])
+                                                        'data': zip_buffer.getvalue(),
+                                                        'filename': zip_filename
                                                     })
 
                                             # 3. Send email
                                             subject = f"Bảng kê đối chiếu Grab cho đơn vị '{selected_unit_email}'"
                                             body = f"Kính gửi Quý đơn vị {selected_unit_email},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nHệ thống đối chiếu tự động."
-                                            send_gmail_message(creds, recipient_email, subject, body, attachments)
-                                            st.success(f"✅ Đã gửi email thành công đến {recipient_email} cho đơn vị '{selected_unit_email}'.")
+                                            send_gmail_message(creds, to_field, subject, body, attachments)
+                                            st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
                                         except Exception as e:
                                             st.error(f"Lỗi khi gửi email: {e}")
 
@@ -376,8 +391,8 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                 failed_units = []
                                 for i, unit in enumerate(units_to_email):
                                     progress_text = f"Đang xử lý: {unit} ({i+1}/{len(units_to_email)})"; progress_bar.progress((i + 1) / len(units_to_email), text=progress_text)
-                                    recipient_email = unit_to_email_map.get(unit)
-                                    if not recipient_email:
+                                    recipient_emails = unit_to_email_map.get(unit, [])
+                                    if not recipient_emails:
                                         failed_units.append((unit, "Không tìm thấy email trong file mapping."))
                                         continue
                                     try:
@@ -389,19 +404,29 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                         excel_filename = f"BangKe_{safe_unit_name}.xlsx"
                                         attachments = [{'data': excel_data_email, 'filename': excel_filename}]
 
-                                        # 2. Create raw PDF attachments (no zip)
-                                        df_unit_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                        if not df_unit_pdfs.empty:
-                                            for _, row in df_unit_pdfs.iterrows():
+                                        # 2. Create zipped PDF attachments for each employee in the unit
+                                        df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                        if not df_unit_with_pdfs.empty:
+                                            for employee_name, employee_df in df_unit_with_pdfs.groupby('Employee Name'):
+                                                zip_buffer = io.BytesIO()
+                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                    for _, row in employee_df.iterrows():
+                                                        pdf_filename = os.path.basename(row['pdf_filename'])
+                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                
+                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                zip_filename = f"{safe_employee_name}.zip"
+                                                
                                                 attachments.append({
-                                                    'data': row['pdf_content'],
-                                                    'filename': os.path.basename(row['pdf_filename'])
+                                                    'data': zip_buffer.getvalue(),
+                                                    'filename': zip_filename
                                                 })
 
                                         # 3. Send email
                                         subject = f"Bảng kê đối chiếu Grab cho đơn vị '{unit}'"
                                         body = f"Kính gửi Quý đơn vị {unit},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nHệ thống đối chiếu tự động."
-                                        send_gmail_message(creds, recipient_email, subject, body, attachments)
+                                        to_field = ", ".join(recipient_emails)
+                                        send_gmail_message(creds, to_field, subject, body, attachments)
                                         success_count += 1
                                     except Exception as e:
                                         failed_units.append((unit, str(e)))
