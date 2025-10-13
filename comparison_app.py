@@ -12,6 +12,7 @@ import os.path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+from email.utils import formataddr
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -60,7 +61,7 @@ def load_mapping_data():
         st.stop()
 
 # --- HÀM HỖ TRỢ OAUTH2 ---
-SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly']
 TOKEN_FILE = "token.json"
 
 def get_google_credentials(credentials_json_content):
@@ -86,8 +87,13 @@ def send_gmail_message(credentials, to, subject, body, attachments=None):
     """Sends an email with multiple attachments using Gmail API."""
     try:
         service = build('gmail', 'v1', credentials=credentials)
+        user_profile = service.users().getProfile(userId='me').execute()
+        sender_email = user_profile['emailAddress']
+        sender_name = "Hệ thống đối chiếu tự động"
+        
         message = MIMEMultipart()
         message['to'] = to
+        message['from'] = formataddr((sender_name, sender_email))
         message['subject'] = subject
         msg_body = MIMEText(body, 'plain', 'utf-8')
         message.attach(msg_body)
@@ -372,8 +378,8 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                                     })
 
                                             # 3. Send email
-                                            subject = f"Bảng kê đối chiếu Grab cho đơn vị '{selected_unit_email}'"
-                                            body = f"Kính gửi Quý đơn vị {selected_unit_email},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nHệ thống đối chiếu tự động."
+                                            subject = f"HOA DON GRAP"
+                                            body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grap phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
                                             send_gmail_message(creds, to_field, subject, body, attachments)
                                             st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
                                         except Exception as e:
@@ -424,7 +430,7 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
 
                                         # 3. Send email
                                         subject = f"Bảng kê đối chiếu Grab cho đơn vị '{unit}'"
-                                        body = f"Kính gửi Quý đơn vị {unit},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nHệ thống đối chiếu tự động."
+                                        body = f"Kính gửi Quý đơn vị {unit},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nSerder mail."
                                         to_field = ", ".join(recipient_emails)
                                         send_gmail_message(creds, to_field, subject, body, attachments)
                                         success_count += 1
