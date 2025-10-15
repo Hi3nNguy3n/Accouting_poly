@@ -121,14 +121,16 @@ st.caption("Copyright by LocTH5, Hiennm22 - BM UDPM")
 # --- GIAO DIỆN NHẬP LIỆU ---
 with st.container(border=True):
     st.subheader("Tải lên các file cần thiết")
-    col1, col2, col3 = st.columns([2, 2, 3])
+    col1, col2, col3 = st.columns(3)
     file_types = ["csv", "xls", "xlsx"]
     with col1:
         uploaded_transport_file = st.file_uploader("1. File Transport", type=file_types)
+        uploaded_express_file = st.file_uploader("2. File Express", type=file_types)
     with col2:
-        uploaded_invoice_file = st.file_uploader("2. File Hóa đơn", type=file_types)
+        uploaded_invoice_file = st.file_uploader("3. File Hóa đơn", type=file_types)
+        uploaded_zip_file = st.file_uploader("4. Folder Báo cáo (.zip)", type=["zip"])
     with col3:
-        uploaded_zip_file = st.file_uploader("3. Folder Báo cáo (.zip)", type=["zip"])
+        uploaded_xml_zip_file = st.file_uploader("5. Folder XML (.zip)", type=["zip"])
 
 # --- CẤU HÌNH OAUTH 2.0 ---
 # The app now automatically loads 'credentials.json' from the local directory.
@@ -189,6 +191,24 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
             rename_dict[df_invoice.columns[16]] = 'SO_HOA_DON'
         df_invoice.rename(columns=rename_dict, inplace=True)
 
+        # Check for unmatched Booking IDs between Transport and Invoice files
+        transport_ids = set(df_transport['Booking ID'].dropna())
+        invoice_ids = set(df_invoice['Booking'].dropna())
+
+        unmatched_transport_ids = transport_ids - invoice_ids
+        unmatched_invoice_ids = invoice_ids - transport_ids
+
+        if unmatched_transport_ids:
+            st.warning(f"Tìm thấy {len(unmatched_transport_ids)} Booking ID chỉ có trong file Transport (không có trong file Hóa đơn):")
+            with st.expander("Xem danh sách ID bị thừa từ file Transport"):
+                st.dataframe(pd.DataFrame(sorted(list(unmatched_transport_ids)), columns=["Booking ID"]))
+
+        if unmatched_invoice_ids:
+            st.warning(f"Tìm thấy {len(unmatched_invoice_ids)} Booking ID chỉ có trong file Hóa đơn (không có trong file Transport):")
+            with st.expander("Xem danh sách ID bị thừa từ file Hóa đơn"):
+                st.dataframe(pd.DataFrame(sorted(list(unmatched_invoice_ids)), columns=["Booking ID"]))
+
+
         matching_ids = list(set(df_transport['Booking ID'].dropna()) & set(df_invoice['Booking'].dropna()))
         if not matching_ids:
             st.warning("Không tìm thấy Booking ID nào trùng khớp giữa hai file đầu vào.")
@@ -231,8 +251,102 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
             if pdf_data:
                 df_pdf_data = pd.DataFrame(pdf_data)
                 df_merged['pdf_link_key_str'] = df_merged['pdf_link_key'].astype(str)
+
+                # Check for PDF files that don't match any invoice row
+                merged_keys = set(df_merged['pdf_link_key_str'])
+                pdf_keys = set(df_pdf_data['pdf_link_key_str'])
+                unmatched_pdf_keys = pdf_keys - merged_keys
+
+                if unmatched_pdf_keys:
+                    unmatched_pdf_files = df_pdf_data[df_pdf_data['pdf_link_key_str'].isin(unmatched_pdf_keys)]
+                    st.warning(f"Tìm thấy {len(unmatched_pdf_files)} file PDF không khớp với bất kỳ dòng nào trong file Hóa đơn:")
+                    with st.expander("Xem danh sách file PDF bị thừa"):
+                        st.dataframe(unmatched_pdf_files[['pdf_filename', 'pdf_link_key_str']])
+
                 df_merged = pd.merge(df_merged, df_pdf_data, on='pdf_link_key_str', how='left')
                 count_no_pdf = df_merged['pdf_filename'].isnull().sum()
+
+        # --- 3.1. XỬ LÝ FOLDER XML (NẾU CÓ) ---
+        if uploaded_xml_zip_file is not None:
+            xml_data = []
+            with zipfile.ZipFile(uploaded_xml_zip_file, 'r') as zip_ref:
+                xml_file_names = [name for name in zip_ref.namelist() if name.lower().endswith('.xml') and not name.startswith('__MACOSX')]
+                st.info(f"Bắt đầu xử lý {len(xml_file_names)} file XML từ tệp .zip...")
+                progress_bar_xml = st.progress(0, text="Đang xử lý file XML...")
+                for i, filename in enumerate(xml_file_names):
+                    try:
+                        base = os.path.basename(filename)
+                        key_from_filename = ''
+                        try:
+                            # Attempt 1: PDF-style naming (e.g., 1_C25MGA_2565515_....xml)
+                            key_from_filename = base.split('_')[2]
+                        except IndexError:
+                            # Attempt 2: Simple naming (e.g., 2565515.xml)
+                            key_from_filename = base.split('.')[0]
+
+                        if not key_from_filename.strip():
+                            st.warning(f"Không thể lấy key từ tên file XML: '{filename}'. Bỏ qua file này.")
+                            continue
+
+                        with zip_ref.open(filename) as xml_file:
+                            xml_content = xml_file.read()
+                            text = xml_content.decode('utf-8', errors='ignore')
+
+                            # Extract invoice code from XML using regex on common tags
+                            found_code = "Không tìm thấy trong XML"
+                            code_match = re.search(r'<InvoiceCode>(.*?)</InvoiceCode>', text, re.IGNORECASE) or \
+                                         re.search(r'<MaNhanHoaDon>(.*?)</MaNhanHoaDon>', text, re.IGNORECASE) or \
+                                         re.search(r'<TransactionID>(.*?)</TransactionID>', text, re.IGNORECASE) or \
+                                         re.search(r'<Fkey>(.*?)</Fkey>', text, re.IGNORECASE) # Another common one
+                            if code_match:
+                                found_code = code_match.group(1).strip()
+
+                            # Extract invoice date from XML using regex
+                            ngay_hd_str = "Không tìm thấy"
+                            date_match = re.search(r'<IssuedDate>(.*?)</IssuedDate>', text, re.IGNORECASE) # YYYY-MM-DD
+                            if date_match:
+                                try:
+                                    # Handle various date formats that might be in the tag
+                                    dt = pd.to_datetime(date_match.group(1))
+                                    ngay_hd_str = dt.strftime('%d/%m/%Y')
+                                except Exception:
+                                    # If parsing fails, try to use the raw value
+                                    ngay_hd_str = date_match.group(1).strip()
+                            else:
+                                # Fallback to the same regex as for PDFs
+                                match = re.search(r'Ngày\s*(\d{1,2})\s*tháng\s*(\d{1,2})\s*năm\s*(\d{4})', text, re.IGNORECASE)
+                                if match:
+                                    day, month, year = match.groups()
+                                    ngay_hd_str = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+
+                            xml_data.append({
+                                'pdf_link_key_str': key_from_filename,
+                                'Mã hóa đơn từ XML': found_code,
+                                'Ngay_HD_xml': ngay_hd_str,
+                                'xml_content': xml_content,
+                                'xml_filename': os.path.basename(filename)
+                            })
+                    except Exception as e:
+                        st.warning(f"Lỗi khi đọc file XML {filename} trong zip: {e}")
+                    progress_bar_xml.progress((i + 1) / len(xml_file_names), text=f"Đang xử lý: {os.path.basename(filename)}")
+            
+            if xml_data:
+                df_xml_data = pd.DataFrame(xml_data)
+                if 'pdf_link_key_str' not in df_merged.columns:
+                    df_merged['pdf_link_key_str'] = df_merged['pdf_link_key'].astype(str)
+                
+                # Check for XML files that don't match any invoice row
+                merged_keys_for_xml = set(df_merged['pdf_link_key_str'])
+                xml_keys = set(df_xml_data['pdf_link_key_str'])
+                unmatched_xml_keys = xml_keys - merged_keys_for_xml
+
+                if unmatched_xml_keys:
+                    unmatched_xml_files = df_xml_data[df_xml_data['pdf_link_key_str'].isin(unmatched_xml_keys)]
+                    st.warning(f"Tìm thấy {len(unmatched_xml_files)} file XML không khớp với bất kỳ dòng nào trong file Hóa đơn:")
+                    with st.expander("Xem danh sách file XML bị thừa"):
+                        st.dataframe(unmatched_xml_files[['xml_filename', 'pdf_link_key_str']])
+
+                df_merged = pd.merge(df_merged, df_xml_data, on='pdf_link_key_str', how='left')
 
         # --- 4. THỐNG KÊ VÀ HIỂN THỊ ---
         if count_no_pdf > 0:
@@ -450,6 +564,20 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                     excel_buffer = io.BytesIO(); wb.save(excel_buffer); return excel_buffer.getvalue()
 
                 st.subheader("📧 Gửi Bảng Kê qua Email (bằng Gmail)")
+
+                with st.expander("Hướng dẫn & Tải file mẫu Email Mapping"):
+                    st.info("Hệ thống sử dụng file `FileMau/Tong hop _ Report.xlsx` để lấy danh sách email cho từng đơn vị. Nếu có thay đổi về email, bạn cần cập nhật file này trên server và khởi động lại ứng dụng.")
+                    try:
+                        with open("FileMau/Tong hop _ Report.xlsx", "rb") as file:
+                            st.download_button(
+                                label="📥 Tải file mẫu (Tong hop _ Report.xlsx)",
+                                data=file,
+                                file_name="Tong hop _ Report.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                    except FileNotFoundError:
+                        st.error("Lỗi: Không tìm thấy file mẫu tại `FileMau/Tong hop _ Report.xlsx`.")
+
                 if 'credentials_json_content' not in st.session_state:
                     st.warning("Vui lòng tải file `credentials.json` ở trên để kích hoạt chức năng gửi email.")
                 else:
@@ -492,16 +620,39 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                                 zip_buffer = io.BytesIO()
                                                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
                                                     for _, row in employee_df.iterrows():
-                                                        pdf_filename = os.path.basename(row['pdf_filename'])
-                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                        if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                            pdf_filename = os.path.basename(row['pdf_filename'])
+                                                            zip_f.writestr(pdf_filename, row['pdf_content'])
                                                 
                                                 safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                zip_filename = f"{safe_employee_name}.zip"
+                                                zip_filename = f"{safe_employee_name}_pdf.zip"
                                                 
                                                 attachments.append({
                                                     'data': zip_buffer.getvalue(),
                                                     'filename': zip_filename
                                                 })
+
+                                        # 2.1. Create zipped XML attachments for each employee
+                                        if 'xml_content' in df_unit.columns:
+                                            df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
+                                            if not df_unit_with_xmls.empty:
+                                                employee_groups_xml = df_unit_with_xmls.groupby('Employee Name')
+                                                st.info(f"Đang tạo và đính kèm {len(employee_groups_xml)} file .zip (chứa XML) cho từng nhân viên...")
+                                                for employee_name, employee_df in employee_groups_xml:
+                                                    zip_buffer = io.BytesIO()
+                                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                        for _, row in employee_df.iterrows():
+                                                            if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
+                                                                xml_filename = os.path.basename(row['xml_filename'])
+                                                                zip_f.writestr(xml_filename, row['xml_content'])
+                                                    
+                                                    safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                    zip_filename = f"{safe_employee_name}_xml.zip"
+                                                    
+                                                    attachments.append({
+                                                        'data': zip_buffer.getvalue(),
+                                                        'filename': zip_filename
+                                                    })
 
                                         # 3. Send email
                                         subject = f"HOA DON GRAP"
@@ -543,16 +694,37 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                                             zip_buffer = io.BytesIO()
                                             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
                                                 for _, row in employee_df.iterrows():
-                                                    pdf_filename = os.path.basename(row['pdf_filename'])
-                                                    zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                    if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                        pdf_filename = os.path.basename(row['pdf_filename'])
+                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
                                             
                                             safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                            zip_filename = f"{safe_employee_name}.zip"
+                                            zip_filename = f"{safe_employee_name}_pdf.zip"
                                             
                                             attachments.append({
                                                 'data': zip_buffer.getvalue(),
                                                 'filename': zip_filename
                                             })
+
+                                    # 2.1. Create zipped XML attachments for each employee
+                                    if 'xml_content' in df_unit.columns:
+                                        df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
+                                        if not df_unit_with_xmls.empty:
+                                            for employee_name, employee_df in df_unit_with_xmls.groupby('Employee Name'):
+                                                zip_buffer = io.BytesIO()
+                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                    for _, row in employee_df.iterrows():
+                                                        if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
+                                                            xml_filename = os.path.basename(row['xml_filename'])
+                                                            zip_f.writestr(xml_filename, row['xml_content'])
+                                                
+                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                zip_filename = f"{safe_employee_name}_xml.zip"
+                                                
+                                                attachments.append({
+                                                    'data': zip_buffer.getvalue(),
+                                                    'filename': zip_filename
+                                                })
 
                                     # 3. Send email
                                     subject = f"Bảng kê đối chiếu Grab cho đơn vị '{unit}'"
