@@ -66,7 +66,7 @@ def get_google_credentials(credentials_json_content):
             try:
                 flow = InstalledAppFlow.from_client_config(
                     json.loads(credentials_json_content), SCOPES)
-                creds = flow.run_local_server(port=0)
+                creds = flow.run_console()
                 st.session_state['credentials'] = creds.to_json()
             except Exception as e:
                 st.error(f"Lỗi trong quá trình xác thực: {e}")
