@@ -63,7 +63,7 @@ def get_google_credentials(credentials_json_content):
             try:
                 flow = InstalledAppFlow.from_client_config(
                     json.loads(credentials_json_content), SCOPES)
-                creds = flow.run_console()
+                creds = flow.run_local_server()
                 st.session_state['credentials'] = creds.to_json()
             except Exception as e:
                 st.error(f"Lỗi trong quá trình xác thực: {e}")
@@ -112,7 +112,7 @@ def show_login_page():
             creds, user_info = get_google_credentials(credentials_json_content)
             if creds and user_info:
                 st.success(f"Đăng nhập thành công! Xin chào, {user_info.get('name', 'bạn')}.")
-                st.experimental_rerun() # Tải lại trang để vào app chính
+                st.rerun() # Tải lại trang để vào app chính
             else:
                 # Lỗi đã được hiển thị trong hàm get_google_credentials
                 pass
@@ -132,7 +132,7 @@ def main_app():
             for key in keys_to_delete:
                 if key in st.session_state:
                     del st.session_state[key]
-            st.experimental_rerun()
+            st.rerun()
 
     st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
     st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
