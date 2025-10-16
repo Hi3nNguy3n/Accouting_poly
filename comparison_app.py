@@ -95,7 +95,7 @@ def get_google_credentials(credentials_json_content):
 def show_login_page():
     """Hiển thị trang đăng nhập và xử lý việc nhấn nút."""
     st.set_page_config(page_title="Đăng nhập", layout="centered", page_icon="🔑")
-    st.title("🔑 Đăng nhập đi chế ơi!")
+    st.title("🔑 Đăng nhập đi cục dàng!")
     st.write("Vui lòng đăng nhập bằng tài khoản Google @fpt.edu.vn của bạn để tiếp tục.")
 
     # Tải credentials.json
