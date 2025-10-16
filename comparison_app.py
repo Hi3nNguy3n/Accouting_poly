@@ -142,16 +142,53 @@ if os.path.exists(CREDENTIALS_FILE):
     st.session_state.credentials_loaded = True
 
 # --- BẮT ĐẦU XỬ LÝ KHI CÓ ĐỦ FILE ---
-if uploaded_transport_file is not None and uploaded_invoice_file is not None:
+if (uploaded_transport_file is not None or uploaded_express_file is not None) and uploaded_invoice_file is not None:
     try:
         employee_to_unit_map, unit_to_email_map = load_mapping_data()
 
-        # (The rest of the data processing logic remains the same as before)
         # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
-        if uploaded_transport_file.name.endswith('.csv'):
-            df_transport = pd.read_csv(uploaded_transport_file, skiprows=8)
-        else:
-            df_transport = pd.read_excel(uploaded_transport_file, skiprows=8)
+        source_dfs = []
+        if uploaded_transport_file:
+            try:
+                if uploaded_transport_file.name.endswith('.csv'):
+                    df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=8)
+                else:
+                    df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=8)
+                
+                if df_transport_single.shape[1] > 10:
+                    # Rename Booking ID from Column K (index 10)
+                    df_transport_single.rename(columns={df_transport_single.columns[10]: 'Booking ID'}, inplace=True)
+                    # Rename Employee Name from Column C (index 2)
+                    df_transport_single.rename(columns={df_transport_single.columns[2]: 'Employee Name'}, inplace=True)
+                    source_dfs.append(df_transport_single)
+                else:
+                    st.warning(f"File Transport '{uploaded_transport_file.name}' dường như không hợp lệ (cần ít nhất 11 cột). Bỏ qua file này.")
+            except Exception as e:
+                st.error(f"Lỗi khi đọc file Transport '{uploaded_transport_file.name}': {e}")
+
+        if uploaded_express_file:
+            try:
+                if uploaded_express_file.name.endswith('.csv'):
+                    df_express_single = pd.read_csv(uploaded_express_file, skiprows=8)
+                else:
+                    df_express_single = pd.read_excel(uploaded_express_file, skiprows=8)
+
+                if df_express_single.shape[1] > 9:
+                    # Rename Booking ID from Column J (index 9)
+                    df_express_single.rename(columns={df_express_single.columns[9]: 'Booking ID'}, inplace=True)
+                    # Rename Employee Name from Column C (index 2)
+                    df_express_single.rename(columns={df_express_single.columns[2]: 'Employee Name'}, inplace=True)
+                    source_dfs.append(df_express_single)
+                else:
+                    st.warning(f"File Express '{uploaded_express_file.name}' dường như không hợp lệ (cần ít nhất 10 cột). Bỏ qua file này.")
+            except Exception as e:
+                st.error(f"Lỗi khi đọc file Express '{uploaded_express_file.name}': {e}")
+
+        if not source_dfs:
+            st.error("Không thể xử lý file Transport hoặc Express. Vui lòng kiểm tra lại định dạng file.")
+            st.stop()
+        
+        df_transport = pd.concat(source_dfs, ignore_index=True)
 
         if uploaded_invoice_file.name.endswith('.csv'):
             df_invoice = pd.read_csv(uploaded_invoice_file)
@@ -515,233 +552,262 @@ if uploaded_transport_file is not None and uploaded_invoice_file is not None:
                             st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
                         st.markdown('<hr style="margin-top:0.25rem; margin-bottom:0.25rem;">', unsafe_allow_html=True)
-        try:
-            date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
-            date_col_name = find_col(df_merged, date_cols)
-            pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
-            dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
-
-            if date_col_name is None:
                 try:
-                    uploaded_transport_file.seek(0)
-                    header_list = pd.read_csv(uploaded_transport_file, skiprows=8, nrows=1).columns.tolist() if uploaded_transport_file.name.endswith('.csv') else pd.read_excel(uploaded_transport_file, skiprows=8, nrows=1).columns.tolist()
-                    st.error(f"**Lỗi Bảng kê: Không thể tìm thấy cột Ngày tháng.** Vui lòng cho tôi biết tên cột ngày tháng chính xác từ danh sách bên dưới. **Các cột tìm được:** `{header_list}`")
-                except Exception as e:
-                    st.error(f"Lỗi Bảng kê: Không tìm thấy cột ngày tháng. Lỗi khi đọc cột: {e}")
-            else:
-                df_merged['Date_dt'] = pd.to_datetime(df_merged[date_col_name], errors='coerce')
-                start_date = df_merged['Date_dt'].min()
-                end_date = df_merged['Date_dt'].max()
-
-                @st.cache_data
-                def generate_bang_ke_excel(_df, s_date, e_date, _d_col, _p_col, _do_col):
-                    from openpyxl import load_workbook
-                    from openpyxl.styles import Font
-                    template_path = "FileMau/BangKe.xlsx"
-                    wb = load_workbook(template_path)
-                    ws = wb.active
-                    ws['C4'] = s_date.strftime('%d/%m/%Y') if pd.notna(s_date) else "N/A"
-                    ws['C5'] = e_date.strftime('%d/%m/%Y') if pd.notna(e_date) else "N/A"
-                    start_row = 8
-                    for i, row in _df.reset_index(drop=True).iterrows():
-                        ws.cell(row=start_row + i, column=1, value=i + 1)
-                        ws.cell(row=start_row + i, column=2, value=row['Booking ID'])
-                        ws.cell(row=start_row + i, column=3, value=f" {row['Employee Name']}")
-                        if _p_col: ws.cell(row=start_row + i, column=4, value=row[_p_col])
-                        if _do_col: ws.cell(row=start_row + i, column=5, value=row[_do_col])
-                        if 'GEMINI_NGAY_HD_INVOICE' in row and pd.notna(row['GEMINI_NGAY_HD_INVOICE']): ws.cell(row=start_row + i, column=6, value=row['GEMINI_NGAY_HD_INVOICE'])
-                        ws.cell(row=start_row + i, column=7, value=row['HINH_THUC_TT'])
-                        ws.cell(row=start_row + i, column=8, value="{:,.0f}".format(row['TIEN_TRC_THUE']))
-                        ws.cell(row=start_row + i, column=9, value="{:,.0f}".format(row['TIEN_THUE8']))
-                        ws.cell(row=start_row + i, column=10, value="{:,.0f}".format(row['TONG_TIEN']))
-                        ws.cell(row=start_row + i, column=11, value=row['NGAY_BOOKING'])
-                        ws.cell(row=start_row + i, column=12, value=row['pdf_link_key'])
-                    total_row_index = start_row + len(_df)
-                    total_label_cell = ws.cell(row=total_row_index, column=7, value="Tổng cộng"); total_label_cell.font = Font(bold=True)
-                    total_value_cell_8 = ws.cell(row=total_row_index, column=8, value="{:,.0f}".format(_df['TIEN_TRC_THUE'].sum())); total_value_cell_8.font = Font(bold=True)
-                    total_value_cell_9 = ws.cell(row=total_row_index, column=9, value="{:,.0f}".format(_df['TIEN_THUE8'].sum())); total_value_cell_9.font = Font(bold=True)
-                    total_value_cell_10 = ws.cell(row=total_row_index, column=10, value="{:,.0f}".format(_df['TONG_TIEN'].sum())); total_value_cell_10.font = Font(bold=True)
-                    excel_buffer = io.BytesIO(); wb.save(excel_buffer); return excel_buffer.getvalue()
-
-                st.subheader("📧 Gửi Bảng Kê qua Email (bằng Gmail)")
-
-                with st.expander("Hướng dẫn & Tải file mẫu Email Mapping"):
-                    st.info("Hệ thống sử dụng file `FileMau/Tong hop _ Report.xlsx` để lấy danh sách email cho từng đơn vị. Nếu có thay đổi về email, bạn cần cập nhật file này trên server và khởi động lại ứng dụng.")
-                    try:
-                        with open("FileMau/Tong hop _ Report.xlsx", "rb") as file:
-                            st.download_button(
-                                label="📥 Tải file mẫu (Tong hop _ Report.xlsx)",
-                                data=file,
-                                file_name="Tong hop _ Report.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                    except FileNotFoundError:
-                        st.error("Lỗi: Không tìm thấy file mẫu tại `FileMau/Tong hop _ Report.xlsx`.")
-
-                if 'credentials_json_content' not in st.session_state:
-                    st.warning("Vui lòng tải file `credentials.json` ở trên để kích hoạt chức năng gửi email.")
-                else:
-                    # --- SINGLE SEND ---
-                    st.markdown("###### Gửi cho 1 đơn vị")
-                    unit_col = 'Đơn vị'
-                    unique_units_for_select_email = sorted(df_merged[unit_col].dropna().unique())
-                    selected_unit_email = st.selectbox("Chọn đơn vị để gửi email", unique_units_for_select_email, key="email_unit_select")
-
-                    if selected_unit_email:
-                        recipient_emails = unit_to_email_map.get(selected_unit_email, [])
-                        if recipient_emails:
-                            st.info(f"Bảng kê cho '{selected_unit_email}' sẽ được gửi đến các địa chỉ sau:")
-                            st.markdown(f"**{', '.join(recipient_emails)}**")
+                    date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
+                    date_col_name = find_col(df_merged, date_cols)
+                    pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
+                    dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
+        
+                    if date_col_name is None:
+                        try:
+                            uploaded_transport_file.seek(0)
+                            header_list = pd.read_csv(uploaded_transport_file, skiprows=8, nrows=1).columns.tolist() if uploaded_transport_file.name.endswith('.csv') else pd.read_excel(uploaded_transport_file, skiprows=8, nrows=1).columns.tolist()
+                            st.error(f"**Lỗi Bảng kê: Không thể tìm thấy cột Ngày tháng.** Vui lòng cho tôi biết tên cột ngày tháng chính xác từ danh sách bên dưới. **Các cột tìm được:** `{header_list}`")
+                        except Exception as e:
+                            st.error(f"Lỗi Bảng kê: Không tìm thấy cột ngày tháng. Lỗi khi đọc cột: {e}")
+                    else:
+                        df_merged['Date_dt'] = pd.to_datetime(df_merged[date_col_name], errors='coerce')
+                        start_date = df_merged['Date_dt'].min()
+                        end_date = df_merged['Date_dt'].max()
+        
+                        @st.cache_data
+                        def generate_bang_ke_excel(_df, s_date, e_date, _d_col, _p_col, _do_col):
+                            from openpyxl import load_workbook
+                            from openpyxl.styles import Font
+                            template_path = "FileMau/BangKe.xlsx"
+                            wb = load_workbook(template_path)
+                            ws = wb.active
+                            ws['C4'] = s_date.strftime('%d/%m/%Y') if pd.notna(s_date) else "N/A"
+                            ws['C5'] = e_date.strftime('%d/%m/%Y') if pd.notna(e_date) else "N/A"
+                            start_row = 8
+                            for i, row in _df.reset_index(drop=True).iterrows():
+                                ws.cell(row=start_row + i, column=1, value=i + 1)
+                                ws.cell(row=start_row + i, column=2, value=row['Booking ID'])
+                                ws.cell(row=start_row + i, column=3, value=f" {row['Employee Name']}")
+                                if _p_col: ws.cell(row=start_row + i, column=4, value=row[_p_col])
+                                if _do_col: ws.cell(row=start_row + i, column=5, value=row[_do_col])
+                                if 'GEMINI_NGAY_HD_INVOICE' in row and pd.notna(row['GEMINI_NGAY_HD_INVOICE']): ws.cell(row=start_row + i, column=6, value=row['GEMINI_NGAY_HD_INVOICE'])
+                                ws.cell(row=start_row + i, column=7, value=row['HINH_THUC_TT'])
+                                ws.cell(row=start_row + i, column=8, value="{:,.0f}".format(row['TIEN_TRC_THUE']))
+                                ws.cell(row=start_row + i, column=9, value="{:,.0f}".format(row['TIEN_THUE8']))
+                                ws.cell(row=start_row + i, column=10, value="{:,.0f}".format(row['TONG_TIEN']))
+                                ws.cell(row=start_row + i, column=11, value=row['NGAY_BOOKING'])
+                                ws.cell(row=start_row + i, column=12, value=row['pdf_link_key'])
+                            total_row_index = start_row + len(_df)
+                            total_label_cell = ws.cell(row=total_row_index, column=7, value="Tổng cộng"); total_label_cell.font = Font(bold=True)
+                            total_value_cell_8 = ws.cell(row=total_row_index, column=8, value="{:,.0f}".format(_df['TIEN_TRC_THUE'].sum())); total_value_cell_8.font = Font(bold=True)
+                            total_value_cell_9 = ws.cell(row=total_row_index, column=9, value="{:,.0f}".format(_df['TIEN_THUE8'].sum())); total_value_cell_9.font = Font(bold=True)
+                            total_value_cell_10 = ws.cell(row=total_row_index, column=10, value="{:,.0f}".format(_df['TONG_TIEN'].sum())); total_value_cell_10.font = Font(bold=True)
+                            excel_buffer = io.BytesIO(); wb.save(excel_buffer); return excel_buffer.getvalue()
+        
+                        st.subheader("📧 Gửi Bảng Kê qua Email (bằng Gmail)")
+        
+                        uploaded_email_mapping_file = st.file_uploader(
+                            "Tải file Email Mapping (bắt buộc để gửi mail)",
+                            type=["xlsx", "xls"],
+                            help="Tải lên file Excel chứa cột 'Đơn vị' và 'Email' để gửi bảng kê."
+                        )
+        
+                        # Read the mapping file as soon as it's uploaded
+                        unit_to_email_map_upload = None
+                        if uploaded_email_mapping_file is not None:
+                            try:
+                                uploaded_email_mapping_file.seek(0)
+                                df_email_map_upload = pd.read_excel(uploaded_email_mapping_file)
+                                email_col_upload = df_email_map_upload.columns[3]
+                                unit_col_upload = df_email_map_upload.columns[4]
+                                df_email_map_upload = df_email_map_upload.dropna(subset=[email_col_upload, unit_col_upload])
+                                unit_to_email_map_upload = df_email_map_upload.groupby(unit_col_upload)[email_col_upload].apply(lambda x: list(x.unique())).to_dict()
+                            except Exception as e:
+                                st.error(f"Lỗi khi đọc file Email Mapping: {e}")
+                                # Leave map as None and the error will be handled below
+        
+                        with st.expander("Hướng dẫn & Tải file mẫu Email Mapping"):
+                            st.info("Để gửi email, bạn cần tải lên file Excel chứa thông tin email của các đơn vị. Bạn có thể tải file mẫu bên dưới để xem định dạng.")
+                            try:
+                                with open("FileMau/Tong hop _ Report.xlsx", "rb") as file:
+                                    st.download_button(
+                                        label="📥 Tải file mẫu (Tong hop _ Report.xlsx)",
+                                        data=file,
+                                        file_name="Tong hop _ Report.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
+                            except FileNotFoundError:
+                                st.error("Lỗi: Không tìm thấy file mẫu tại `FileMau/Tong hop _ Report.xlsx`.")
+        
+                        if 'credentials_json_content' not in st.session_state:
+                            st.warning("Vui lòng tải file `credentials.json` ở trên để kích hoạt chức năng gửi email.")
                         else:
-                            st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}'.")
-
-                        if st.button(f"📧 Gửi Email đến '{selected_unit_email}'", use_container_width=True, key="send_email_btn"):
-                            if not recipient_emails:
-                                st.error(f"Không thể gửi email: Không tìm thấy email cho đơn vị '{selected_unit_email}'.")
-                            else:
-                                to_field = ", ".join(recipient_emails)
-                                with st.spinner(f"Đang xác thực và gửi email đến {to_field}..."):
-                                    try:
+                            # --- SINGLE SEND ---
+                            st.markdown("###### Gửi cho 1 đơn vị")
+                            unit_col = 'Đơn vị'
+                            unique_units_for_select_email = sorted(df_merged[unit_col].dropna().unique())
+                            selected_unit_email = st.selectbox("Chọn đơn vị để gửi email", unique_units_for_select_email, key="email_unit_select")
+        
+                            if selected_unit_email:
+                                # Display emails for the selected unit if the map is loaded
+                                if uploaded_email_mapping_file and unit_to_email_map_upload is not None:
+                                    recipient_emails_display = unit_to_email_map_upload.get(selected_unit_email, [])
+                                    if recipient_emails_display:
+                                        st.info(f"Bảng kê cho '{selected_unit_email}' sẽ được gửi đến các địa chỉ sau:")
+                                        st.markdown(f"**{', '.join(recipient_emails_display)}**")
+                                    else:
+                                        st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}' trong file đã tải lên.")
+        
+                                if st.button(f"📧 Gửi Email đến '{selected_unit_email}'", use_container_width=True, key="send_email_btn"):
+                                    if unit_to_email_map_upload is None:
+                                        st.error("Vui lòng tải lên file Email Mapping hợp lệ trước khi gửi.")
+                                    else:
+                                        recipient_emails = unit_to_email_map_upload.get(selected_unit_email, [])
+                                        if not recipient_emails:
+                                            st.error(f"Không thể gửi email: Không tìm thấy email cho đơn vị '{selected_unit_email}' trong file đã tải lên.")
+                                        else:
+                                            to_field = ", ".join(recipient_emails)
+                                            with st.spinner(f"Đang xác thực và gửi email đến {to_field}..."):
+                                                try:
+                                                    creds = get_google_credentials(st.session_state.credentials_json_content)
+                                                    df_unit = df_merged[df_merged[unit_col] == selected_unit_email]
+                                                    
+                                                    # 1. Create Excel attachment
+                                                    excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
+                                                    safe_unit_name = "".join(c for c in str(selected_unit_email) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                    excel_filename = f"BangKe_{safe_unit_name}.xlsx"
+                                                    attachments = [{'data': excel_data_email, 'filename': excel_filename}]
+        
+                                                    # 2. Create zipped PDF attachments for each employee
+                                                    df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                                    if not df_unit_with_pdfs.empty:
+                                                        employee_groups = df_unit_with_pdfs.groupby('Employee Name')
+                                                        st.info(f"Đang tạo và đính kèm {len(employee_groups)} file .zip (chứa PDF) cho từng nhân viên...")
+                                                        for employee_name, employee_df in employee_groups:
+                                                            zip_buffer = io.BytesIO()
+                                                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                                for _, row in employee_df.iterrows():
+                                                                    if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                                        pdf_filename = os.path.basename(row['pdf_filename'])
+                                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                            
+                                                            safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                            zip_filename = f"{safe_employee_name}_pdf.zip"
+                                                            
+                                                            attachments.append({
+                                                                'data': zip_buffer.getvalue(),
+                                                                'filename': zip_filename
+                                                            })
+        
+                                                    # 2.1. Create zipped XML attachments for each employee
+                                                    if 'xml_content' in df_unit.columns:
+                                                        df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
+                                                        if not df_unit_with_xmls.empty:
+                                                            employee_groups_xml = df_unit_with_xmls.groupby('Employee Name')
+                                                            st.info(f"Đang tạo và đính kèm {len(employee_groups_xml)} file .zip (chứa XML) cho từng nhân viên...")
+                                                            for employee_name, employee_df in employee_groups_xml:
+                                                                zip_buffer = io.BytesIO()
+                                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                                    for _, row in employee_df.iterrows():
+                                                                        if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
+                                                                            xml_filename = os.path.basename(row['xml_filename'])
+                                                                            zip_f.writestr(xml_filename, row['xml_content'])
+                                                                
+                                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                                zip_filename = f"{safe_employee_name}_xml.zip"
+                                                                
+                                                                attachments.append({
+                                                                    'data': zip_buffer.getvalue(),
+                                                                    'filename': zip_filename
+                                                                })
+        
+                                                    # 3. Send email
+                                                    subject = f"HOA DON GRAP"
+                                                    body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grap phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
+                                                    send_gmail_message(creds, to_field, subject, body, attachments)
+                                                    st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
+                                                except Exception as e:
+                                                    st.error(f"Lỗi khi gửi email: {e}")
+        
+                            # --- BULK SEND ---
+                            st.divider()
+                            st.markdown("###### Gửi cho tất cả các đơn vị")
+                            if st.button("🚀 Gửi Email cho TẤT CẢ các đơn vị", use_container_width=True, key="send_all_emails_btn"):
+                                if unit_to_email_map_upload is None:
+                                    st.error("Vui lòng tải lên file Email Mapping hợp lệ trước khi gửi.")
+                                else:
+                                    with st.spinner("Bắt đầu quá trình gửi email hàng loạt..."):
                                         creds = get_google_credentials(st.session_state.credentials_json_content)
-                                        df_unit = df_merged[df_merged[unit_col] == selected_unit_email]
-                                        
-                                        # 1. Create Excel attachment
-                                        excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
-                                        safe_unit_name = "".join(c for c in str(selected_unit_email) if c.isalnum() or c in (' ', '_')).rstrip()
-                                        excel_filename = f"BangKe_{safe_unit_name}.xlsx"
-                                        attachments = [{'data': excel_data_email, 'filename': excel_filename}]
-
-                                        # 2. Create zipped PDF attachments for each employee
-                                        df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                        if not df_unit_with_pdfs.empty:
-                                            employee_groups = df_unit_with_pdfs.groupby('Employee Name')
-                                            st.info(f"Đang tạo và đính kèm {len(employee_groups)} file .zip (chứa PDF) cho từng nhân viên...")
-                                            for employee_name, employee_df in employee_groups:
-                                                zip_buffer = io.BytesIO()
-                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                    for _, row in employee_df.iterrows():
-                                                        if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
-                                                            pdf_filename = os.path.basename(row['pdf_filename'])
-                                                            zip_f.writestr(pdf_filename, row['pdf_content'])
+                                        units_to_email = sorted(df_merged[unit_col].dropna().unique())
+                                        progress_bar = st.progress(0, text="Bắt đầu...")
+                                        success_count = 0
+                                        failed_units = []
+                                        for i, unit in enumerate(units_to_email):
+                                            progress_text = f"Đang xử lý: {unit} ({i+1}/{len(units_to_email)})"; progress_bar.progress((i + 1) / len(units_to_email), text=progress_text)
+                                            recipient_emails = unit_to_email_map_upload.get(unit, [])
+                                            if not recipient_emails:
+                                                failed_units.append((unit, "Không tìm thấy email trong file mapping đã tải lên."))
+                                                continue
+                                            try:
+                                                df_unit = df_merged[df_merged[unit_col] == unit]
                                                 
-                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                zip_filename = f"{safe_employee_name}_pdf.zip"
-                                                
-                                                attachments.append({
-                                                    'data': zip_buffer.getvalue(),
-                                                    'filename': zip_filename
-                                                })
-
-                                        # 2.1. Create zipped XML attachments for each employee
-                                        if 'xml_content' in df_unit.columns:
-                                            df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
-                                            if not df_unit_with_xmls.empty:
-                                                employee_groups_xml = df_unit_with_xmls.groupby('Employee Name')
-                                                st.info(f"Đang tạo và đính kèm {len(employee_groups_xml)} file .zip (chứa XML) cho từng nhân viên...")
-                                                for employee_name, employee_df in employee_groups_xml:
-                                                    zip_buffer = io.BytesIO()
-                                                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                        for _, row in employee_df.iterrows():
-                                                            if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
-                                                                xml_filename = os.path.basename(row['xml_filename'])
-                                                                zip_f.writestr(xml_filename, row['xml_content'])
-                                                    
-                                                    safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                    zip_filename = f"{safe_employee_name}_xml.zip"
-                                                    
-                                                    attachments.append({
-                                                        'data': zip_buffer.getvalue(),
-                                                        'filename': zip_filename
-                                                    })
-
-                                        # 3. Send email
-                                        subject = f"HOA DON GRAP"
-                                        body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grap phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
-                                        send_gmail_message(creds, to_field, subject, body, attachments)
-                                        st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
-                                    except Exception as e:
-                                        st.error(f"Lỗi khi gửi email: {e}")
-
-                    # --- BULK SEND ---
-                    st.divider()
-                    st.markdown("###### Gửi cho tất cả các đơn vị")
-                    if st.button("🚀 Gửi Email cho TẤT CẢ các đơn vị", use_container_width=True, key="send_all_emails_btn"):
-                        with st.spinner("Bắt đầu quá trình gửi email hàng loạt..."):
-                            creds = get_google_credentials(st.session_state.credentials_json_content)
-                            units_to_email = sorted(df_merged[unit_col].dropna().unique())
-                            progress_bar = st.progress(0, text="Bắt đầu...")
-                            success_count = 0
-                            failed_units = []
-                            for i, unit in enumerate(units_to_email):
-                                progress_text = f"Đang xử lý: {unit} ({i+1}/{len(units_to_email)})"; progress_bar.progress((i + 1) / len(units_to_email), text=progress_text)
-                                recipient_emails = unit_to_email_map.get(unit, [])
-                                if not recipient_emails:
-                                    failed_units.append((unit, "Không tìm thấy email trong file mapping."))
-                                    continue
-                                try:
-                                    df_unit = df_merged[df_merged[unit_col] == unit]
-                                    
-                                    # 1. Create Excel attachment
-                                    excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
-                                    safe_unit_name = "".join(c for c in str(unit) if c.isalnum() or c in (' ', '_')).rstrip()
-                                    excel_filename = f"BangKe_{safe_unit_name}.xlsx"
-                                    attachments = [{'data': excel_data_email, 'filename': excel_filename}]
-
-                                    # 2. Create zipped PDF attachments for each employee in the unit
-                                    df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                    if not df_unit_with_pdfs.empty:
-                                        for employee_name, employee_df in df_unit_with_pdfs.groupby('Employee Name'):
-                                            zip_buffer = io.BytesIO()
-                                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                for _, row in employee_df.iterrows():
-                                                    if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
-                                                        pdf_filename = os.path.basename(row['pdf_filename'])
-                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
-                                            
-                                            safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                            zip_filename = f"{safe_employee_name}_pdf.zip"
-                                            
-                                            attachments.append({
-                                                'data': zip_buffer.getvalue(),
-                                                'filename': zip_filename
-                                            })
-
-                                    # 2.1. Create zipped XML attachments for each employee
-                                    if 'xml_content' in df_unit.columns:
-                                        df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
-                                        if not df_unit_with_xmls.empty:
-                                            for employee_name, employee_df in df_unit_with_xmls.groupby('Employee Name'):
-                                                zip_buffer = io.BytesIO()
-                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                    for _, row in employee_df.iterrows():
-                                                        if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
-                                                            xml_filename = os.path.basename(row['xml_filename'])
-                                                            zip_f.writestr(xml_filename, row['xml_content'])
-                                                
-                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                zip_filename = f"{safe_employee_name}_xml.zip"
-                                                
-                                                attachments.append({
-                                                    'data': zip_buffer.getvalue(),
-                                                    'filename': zip_filename
-                                                })
-
-                                    # 3. Send email
-                                    subject = f"Bảng kê đối chiếu Grab cho đơn vị '{unit}'"
-                                    body = f"Kính gửi Quý đơn vị {unit},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nSerder mail."
-                                    to_field = ", ".join(recipient_emails)
-                                    send_gmail_message(creds, to_field, subject, body, attachments)
-                                    success_count += 1
-                                except Exception as e:
-                                    failed_units.append((unit, str(e)))
-                            progress_bar.empty()
-                            st.success(f"✅ Hoàn tất! Đã gửi thành công {success_count}/{len(units_to_email)} email.")
-                            if failed_units:
-                                st.error(f"❌ Có {len(failed_units)} email gửi thất bại.")
-                                with st.expander("Xem chi tiết lỗi"):
-                                    for unit, reason in failed_units: st.write(f"- **{unit}**: {reason}")
-        except Exception as e:
-            st.error(f"Đã xảy ra lỗi khi tạo file Bảng kê hoặc gửi mail: {e}")
+                                                # 1. Create Excel attachment
+                                                excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
+                                                safe_unit_name = "".join(c for c in str(unit) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                excel_filename = f"BangKe_{safe_unit_name}.xlsx"
+                                                attachments = [{'data': excel_data_email, 'filename': excel_filename}]
+        
+                                                # 2. Create zipped PDF attachments for each employee in the unit
+                                                df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                                if not df_unit_with_pdfs.empty:
+                                                    for employee_name, employee_df in df_unit_with_pdfs.groupby('Employee Name'):
+                                                        zip_buffer = io.BytesIO()
+                                                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                            for _, row in employee_df.iterrows():
+                                                                if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                                    pdf_filename = os.path.basename(row['pdf_filename'])
+                                                                    zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                        
+                                                        safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                        zip_filename = f"{safe_employee_name}_pdf.zip"
+                                                        
+                                                        attachments.append({
+                                                            'data': zip_buffer.getvalue(),
+                                                            'filename': zip_filename
+                                                        })
+        
+                                                # 2.1. Create zipped XML attachments for each employee
+                                                if 'xml_content' in df_unit.columns:
+                                                    df_unit_with_xmls = df_unit[df_unit['xml_content'].notna()]
+                                                    if not df_unit_with_xmls.empty:
+                                                        for employee_name, employee_df in df_unit_with_xmls.groupby('Employee Name'):
+                                                            zip_buffer = io.BytesIO()
+                                                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                                for _, row in employee_df.iterrows():
+                                                                    if pd.notna(row['xml_filename']) and pd.notna(row['xml_content']):
+                                                                        xml_filename = os.path.basename(row['xml_filename'])
+                                                                        zip_f.writestr(xml_filename, row['xml_content'])
+                                                            
+                                                            safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                            zip_filename = f"{safe_employee_name}_xml.zip"
+                                                            
+                                                            attachments.append({
+                                                                'data': zip_buffer.getvalue(),
+                                                                'filename': zip_filename
+                                                            })
+        
+                                                # 3. Send email
+                                                subject = f"Bảng kê đối chiếu Grab cho đơn vị '{unit}'"
+                                                body = f"Kính gửi Quý đơn vị {unit},\n\nVui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này.\n\nTrân trọng,\nSerder mail."
+                                                to_field = ", ".join(recipient_emails)
+                                                send_gmail_message(creds, to_field, subject, body, attachments)
+                                                success_count += 1
+                                            except Exception as e:
+                                                failed_units.append((unit, str(e)))
+                                        progress_bar.empty()
+                                        st.success(f"✅ Hoàn tất! Đã gửi thành công {success_count}/{len(units_to_email)} email.")
+                                        if failed_units:
+                                            st.error(f"❌ Có {len(failed_units)} email gửi thất bại.")
+                                            with st.expander("Xem chi tiết lỗi"):
+                                                for unit, reason in failed_units: st.write(f"- **{unit}**: {reason}")
+                except Exception as e:
+                    st.error(f"Đã xảy ra lỗi khi tạo file Bảng kê hoặc gửi mail: {e}")
 
     except Exception as e:
         st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
