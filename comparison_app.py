@@ -26,531 +26,552 @@ except ImportError:
     st.error("Thư viện pypdf chưa được cài đặt. Vui lòng chạy lệnh sau trong terminal: pip install pypdf")
     st.stop()
 
-# --- HÀM HỖ TRỢ ---
-def find_col(df, possibilities):
-    """Finds the first column in a dataframe that exists from a list of possibilities."""
-    for p in possibilities:
-        if p in df.columns:
-            return p
-    return None
-
-def load_mapping_data():
-    """Đọc file Excel mapping và trả về 2 dictionaries:
-    1. Employee Name -> Đơn vị
-    2. Đơn vị -> List of Emails
-    """
-    try:
-        df_mapping = pd.read_excel("FileMau/Tong hop _ Report.xlsx")
-        name_col = df_mapping.columns[1]
-        email_col = df_mapping.columns[3]
-        unit_col = df_mapping.columns[4]
-        df_mapping = df_mapping.dropna(subset=[name_col, unit_col])
-        employee_to_unit_map = df_mapping.set_index(name_col)[unit_col].to_dict()
-        df_email_map = df_mapping.dropna(subset=[email_col])
-        # Group by unit and create a list of unique emails for each unit
-        unit_to_email_map = df_email_map.groupby(unit_col)[email_col].apply(lambda x: list(x.unique())).to_dict()
-        return employee_to_unit_map, unit_to_email_map
-    except FileNotFoundError:
-        st.error("Lỗi: Không tìm thấy file mapping 'FileMau/Tong hop _ Report.xlsx'. Vui lòng đảm bảo file tồn tại.")
-        st.stop()
-    except IndexError:
-        st.error("Lỗi: File mapping 'Tong hop _ Report.xlsx' không có đủ 5 cột (để lấy cột B, D, và E).")
-        st.stop()
-    except Exception as e:
-        st.error(f"Lỗi khi đọc file mapping: {e}")
-        st.stop()
-
-# --- HÀM HỖ TRỢ OAUTH2 ---
-SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly']
+# --- HÀM HỖ TRỢ OAUTH2 & ĐĂNG NHẬP ---
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.send',
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile'
+]
 TOKEN_FILE = "token.json"
+CREDENTIALS_FILE = "credentials.json"
 
 def get_google_credentials(credentials_json_content):
+    """Hàm này xử lý cả việc lấy credentials và thông tin người dùng."""
     creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    # Tải credentials từ session nếu có
+    if 'credentials' in st.session_state:
+        creds_json = json.loads(st.session_state['credentials'])
+        creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            st.info("Refreshing expired credentials...")
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                st.session_state['credentials'] = creds.to_json()
+            except Exception as e:
+                st.error(f"Lỗi khi làm mới token: {e}")
+                # Xóa token hỏng và yêu cầu đăng nhập lại
+                if 'credentials' in st.session_state:
+                    del st.session_state['credentials']
+                if 'user_info' in st.session_state:
+                    del st.session_state['user_info']
+                return None, None
         else:
-            st.info("Credentials not found or invalid, starting authorization flow...")
-            flow = InstalledAppFlow.from_client_config(
-                json.loads(credentials_json_content), SCOPES)
-            # run_local_server will open a browser tab for user authorization
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
-            st.success(f"Credentials saved to {TOKEN_FILE}")
-    return creds
+            # Bắt đầu quy trình đăng nhập mới nếu không có credentials hợp lệ
+            try:
+                flow = InstalledAppFlow.from_client_config(
+                    json.loads(credentials_json_content), SCOPES)
+                creds = flow.run_local_server(port=0)
+                st.session_state['credentials'] = creds.to_json()
+            except Exception as e:
+                st.error(f"Lỗi trong quá trình xác thực: {e}")
+                return None, None
 
-def send_gmail_message(credentials, to, subject, body, attachments=None):
-    """Sends an email with multiple attachments using Gmail API."""
+    # Sau khi có credentials, lấy thông tin người dùng
     try:
-        service = build('gmail', 'v1', credentials=credentials)
-        user_profile = service.users().getProfile(userId='me').execute()
-        sender_email = user_profile['emailAddress']
-        sender_name = "Hệ thống đối chiếu tự động"
+        service = build('oauth2', 'v2', credentials=creds)
+        user_info = service.userinfo().get().execute()
         
-        message = MIMEMultipart()
-        message['to'] = to
-        message['from'] = formataddr((sender_name, sender_email))
-        message['subject'] = subject
-        msg_body = MIMEText(body, 'plain', 'utf-8')
-        message.attach(msg_body)
+        # --- KIỂM TRA EMAIL ---
+        email = user_info.get('email', '').lower()
+        if not email.endswith('@fpt.edu.vn'):
+            st.error("Truy cập bị từ chối. Chỉ các tài khoản email FPT (@fpt.edu.vn) mới được phép đăng nhập.")
+            # Xóa thông tin đăng nhập không hợp lệ
+            keys_to_delete = ['credentials', 'user_info']
+            for key in keys_to_delete:
+                if key in st.session_state:
+                    del st.session_state[key]
+            return None, None
+        # --- KẾT THÚC KIỂM TRA EMAIL ---
 
-        if attachments:
-            for attachment in attachments:
-                if attachment and attachment.get('data') and attachment.get('filename'):
-                    part = MIMEApplication(attachment['data'], Name=attachment['filename'])
-                    part['Content-Disposition'] = f'attachment; filename="{attachment["filename"]}"'
-                    message.attach(part)
-
-        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        create_message = {'raw': encoded_message}
-        send_message = (service.users().messages().send(userId="me", body=create_message).execute())
+        st.session_state['user_info'] = user_info
+        return creds, user_info
     except HttpError as error:
-        st.error(f"An error occurred while sending email: {error}")
-        raise error
+        st.error(f"Lỗi khi lấy thông tin người dùng: {error}")
+        return None, None
 
-# --- GIAO DIỆN CHÍNH ---
-st.set_page_config(page_title="Đối chiếu FPT", layout="wide", page_icon="📊")
-st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
-st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
-st.caption("Copyright by LocTH5, Hiennm22 - BM UDPM")
+def show_login_page():
+    """Hiển thị trang đăng nhập và xử lý việc nhấn nút."""
+    st.set_page_config(page_title="Đăng nhập", layout="centered", page_icon="🔑")
+    st.title("🔑 Đăng nhập đi chế ơi!")
+    st.write("Vui lòng đăng nhập bằng tài khoản Google @fpt.edu.vn của bạn để tiếp tục.")
 
-# --- GIAO DIỆN NHẬP LIỆU ---
-with st.container(border=True):
-    st.subheader("Tải lên các file cần thiết")
-    col1, col2, col3 = st.columns(3)
-    file_types = ["csv", "xls", "xlsx"]
-    with col1:
-        uploaded_transport_file = st.file_uploader("1. File Transport", type=file_types)
-        uploaded_express_file = st.file_uploader("2. File Express", type=file_types)
-    with col2:
-        uploaded_invoice_file = st.file_uploader("3. File Hóa đơn", type=file_types)
-        uploaded_zip_file = st.file_uploader("4. Folder Báo cáo (.zip)", type=["zip"])
-    with col3:
-        uploaded_xml_zip_file = st.file_uploader("5. Folder XML (.zip)", type=["zip"])
+    # Tải credentials.json
+    credentials_json_content = None
+    if os.path.exists(CREDENTIALS_FILE):
+        with open(CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
+            credentials_json_content = f.read()
+    else:
+        st.error(f"Không tìm thấy file `{CREDENTIALS_FILE}`. Vui lòng đảm bảo file này tồn tại trong thư mục.")
+        st.stop()
 
-# --- CẤU HÌNH OAUTH 2.0 ---
-# The app now automatically loads 'credentials.json' from the local directory.
-CREDENTIALS_FILE = "credentials.json"
-st.session_state.credentials_loaded = False
-if os.path.exists(CREDENTIALS_FILE):
-    with open(CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
-        st.session_state.credentials_json_content = f.read()
-    st.session_state.credentials_loaded = True
+    if st.button("Đăng nhập với Google", use_container_width=True):
+        with st.spinner("Đang chuyển hướng đến trang đăng nhập của Google..."):
+            creds, user_info = get_google_credentials(credentials_json_content)
+            if creds and user_info:
+                st.success(f"Đăng nhập thành công! Xin chào, {user_info.get('name', 'bạn')}.")
+                st.experimental_rerun() # Tải lại trang để vào app chính
+            else:
+                # Lỗi đã được hiển thị trong hàm get_google_credentials
+                pass
 
-# --- BẮT ĐẦU XỬ LÝ KHI CÓ ĐỦ FILE ---
-if (uploaded_transport_file is not None or uploaded_express_file is not None) and uploaded_invoice_file is not None:
-    try:
-        employee_to_unit_map, unit_to_email_map = load_mapping_data()
+def main_app():
+    """Hàm chứa toàn bộ giao diện và logic của ứng dụng chính."""
+    st.set_page_config(page_title="Đối chiếu FPT", layout="wide", page_icon="📊")
 
-        # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
-        source_dfs = []
-        if uploaded_transport_file:
-            try:
-                if uploaded_transport_file.name.endswith('.csv'):
-                    df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=7)
-                else:
-                    df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=7)
-                
-                if df_transport_single.shape[1] > 10:
-                    # Rename Booking ID from Column K (index 10)
-                    df_transport_single.rename(columns={df_transport_single.columns[10]: 'Booking ID'}, inplace=True)
-                    # Rename Employee Name from Column C (index 2)
-                    df_transport_single.rename(columns={df_transport_single.columns[2]: 'Employee Name'}, inplace=True)
-                    source_dfs.append(df_transport_single)
-                else:
-                    st.warning(f"File Transport '{uploaded_transport_file.name}' dường như không hợp lệ (cần ít nhất 11 cột). Bỏ qua file này.")
-            except Exception as e:
-                st.error(f"Lỗi khi đọc file Transport '{uploaded_transport_file.name}': {e}")
+    # --- SIDEBAR & ĐĂNG XUẤT ---
+    with st.sidebar:
+        user_info = st.session_state.get('user_info', {})
+        st.markdown(f"Xin chào, **{user_info.get('name', 'người dùng')}**")
+        st.caption(user_info.get('email'))
+        if st.button("Đăng xuất"):
+            # Xóa thông tin đăng nhập khỏi session
+            keys_to_delete = ['credentials', 'user_info']
+            for key in keys_to_delete:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.experimental_rerun()
 
-        if uploaded_express_file:
-            try:
-                if uploaded_express_file.name.endswith('.csv'):
-                    df_express_single = pd.read_csv(uploaded_express_file, skiprows=7)
-                else:
-                    df_express_single = pd.read_excel(uploaded_express_file, skiprows=7)
+    st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
+    st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
+    st.caption("Copyright by LocTH5, Hiennm22 - BM UDPM")
 
-                if df_express_single.shape[1] > 9:
-                    # Rename Booking ID from Column J (index 9)
-                    df_express_single.rename(columns={df_express_single.columns[9]: 'Booking ID'}, inplace=True)
-                    # Rename Employee Name from Column C (index 2)
-                    df_express_single.rename(columns={df_express_single.columns[2]: 'Employee Name'}, inplace=True)
-                    source_dfs.append(df_express_single)
-                else:
-                    st.warning(f"File Express '{uploaded_express_file.name}' dường như không hợp lệ (cần ít nhất 10 cột). Bỏ qua file này.")
-            except Exception as e:
-                st.error(f"Lỗi khi đọc file Express '{uploaded_express_file.name}': {e}")
+    # (Dán toàn bộ phần còn lại của ứng dụng vào đây)
+    # --- GIAO DIỆN NHẬP LIỆU ---
+    with st.container(border=True):
+        st.subheader("Tải lên các file cần thiết")
+        col1, col2, col3 = st.columns(3)
+        file_types = ["csv", "xls", "xlsx"]
+        with col1:
+            uploaded_transport_file = st.file_uploader("1. File Transport", type=file_types)
+            uploaded_express_file = st.file_uploader("2. File Express", type=file_types)
+        with col2:
+            uploaded_invoice_file = st.file_uploader("3. File Hóa đơn", type=file_types)
+            uploaded_zip_file = st.file_uploader("4. Folder Báo cáo (.zip)", type=["zip"])
+        with col3:
+            uploaded_xml_zip_file = st.file_uploader("5. Folder XML (.zip)", type=["zip"])
 
-        if not source_dfs:
-            st.error("Không thể xử lý file Transport hoặc Express. Vui lòng kiểm tra lại định dạng file.")
-            st.stop()
-        
-        df_transport = pd.concat(source_dfs, ignore_index=True)
+    # --- CẤU HÌNH OAUTH 2.0 ---
+    # The app now automatically loads 'credentials.json' from the local directory.
+    CREDENTIALS_FILE = "credentials.json"
+    st.session_state.credentials_loaded = False
+    if os.path.exists(CREDENTIALS_FILE):
+        with open(CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
+            st.session_state.credentials_json_content = f.read()
+        st.session_state.credentials_loaded = True
 
-        if uploaded_invoice_file.name.endswith('.csv'):
-            df_invoice = pd.read_csv(uploaded_invoice_file)
-        elif uploaded_invoice_file.name.endswith('.xls'):
-            try:
-                df_invoice = pd.read_html(uploaded_invoice_file)[0]
-            except Exception:
-                df_invoice = pd.read_excel(uploaded_invoice_file, engine='xlrd')
-        else:
-            df_invoice = pd.read_excel(uploaded_invoice_file)
+    # --- BẮT ĐẦU XỬ LÝ KHI CÓ ĐỦ FILE ---
+    if (uploaded_transport_file is not None or uploaded_express_file is not None) and uploaded_invoice_file is not None:
+        try:
+            employee_to_unit_map, unit_to_email_map = load_mapping_data()
 
-        df_transport.columns = df_transport.columns.str.strip()
-        df_invoice.columns = df_invoice.columns.str.strip()
+            # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
+            source_dfs = []
+            if uploaded_transport_file:
+                try:
+                    if uploaded_transport_file.name.endswith('.csv'):
+                        df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=7)
+                    else:
+                        df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=7)
+                    
+                    if df_transport_single.shape[1] > 10:
+                        # Rename Booking ID from Column K (index 10)
+                        df_transport_single.rename(columns={df_transport_single.columns[10]: 'Booking ID'}, inplace=True)
+                        # Rename Employee Name from Column C (index 2)
+                        df_transport_single.rename(columns={df_transport_single.columns[2]: 'Employee Name'}, inplace=True)
+                        source_dfs.append(df_transport_single)
+                    else:
+                        st.warning(f"File Transport '{uploaded_transport_file.name}' dường như không hợp lệ (cần ít nhất 11 cột). Bỏ qua file này.")
+                except Exception as e:
+                    st.error(f"Lỗi khi đọc file Transport '{uploaded_transport_file.name}': {e}")
 
-        if len(df_transport.columns) > 9:
-            pickup_col_name = df_transport.columns[7]
-            dropoff_col_name = df_transport.columns[9]
-            df_transport.rename(columns={
-                pickup_col_name: 'GEMINI_PICKUP_ADDRESS',
-                dropoff_col_name: 'GEMINI_DROPOFF_ADDRESS'
-            }, inplace=True)
+            if uploaded_express_file:
+                try:
+                    if uploaded_express_file.name.endswith('.csv'):
+                        df_express_single = pd.read_csv(uploaded_express_file, skiprows=7)
+                    else:
+                        df_express_single = pd.read_excel(uploaded_express_file, skiprows=7)
 
-        if df_invoice.shape[1] < 13:
-            st.error(f"File Hóa đơn không có đủ 13 cột. Chỉ tìm thấy {df_invoice.shape[1]} cột.")
-            st.stop()
-        rename_dict = {
-            df_invoice.columns[1]: 'pdf_link_key',
-            df_invoice.columns[12]: 'summary_ma_nhan_hoa_don'
-        }
-        if len(df_invoice.columns) > 4:
-            rename_dict[df_invoice.columns[4]] = 'GEMINI_NGAY_HD_INVOICE'
-            rename_dict[df_invoice.columns[5]] = 'HINH_THUC_TT'
-            rename_dict[df_invoice.columns[6]] = 'TIEN_TRC_THUE'
-            rename_dict[df_invoice.columns[7]] = 'TIEN_THUE8'
-            rename_dict[df_invoice.columns[8]] = 'TONG_TIEN'
-            rename_dict[df_invoice.columns[15]] = 'NGAY_BOOKING'
-            rename_dict[df_invoice.columns[16]] = 'SO_HOA_DON'
-        df_invoice.rename(columns=rename_dict, inplace=True)
+                    if df_express_single.shape[1] > 9:
+                        # Rename Booking ID from Column J (index 9)
+                        df_express_single.rename(columns={df_express_single.columns[9]: 'Booking ID'}, inplace=True)
+                        # Rename Employee Name from Column C (index 2)
+                        df_express_single.rename(columns={df_express_single.columns[2]: 'Employee Name'}, inplace=True)
+                        source_dfs.append(df_express_single)
+                    else:
+                        st.warning(f"File Express '{uploaded_express_file.name}' dường như không hợp lệ (cần ít nhất 10 cột). Bỏ qua file này.")
+                except Exception as e:
+                    st.error(f"Lỗi khi đọc file Express '{uploaded_express_file.name}': {e}")
 
-        # Check for unmatched Booking IDs between Transport and Invoice files
-        transport_ids = set(df_transport['Booking ID'].dropna())
-        invoice_ids = set(df_invoice['Booking'].dropna())
+            if not source_dfs:
+                st.error("Không thể xử lý file Transport hoặc Express. Vui lòng kiểm tra lại định dạng file.")
+                st.stop()
+            
+            df_transport = pd.concat(source_dfs, ignore_index=True)
 
-        unmatched_transport_ids = transport_ids - invoice_ids
-        unmatched_invoice_ids = invoice_ids - transport_ids
+            if uploaded_invoice_file.name.endswith('.csv'):
+                df_invoice = pd.read_csv(uploaded_invoice_file)
+            elif uploaded_invoice_file.name.endswith('.xls'):
+                try:
+                    df_invoice = pd.read_html(uploaded_invoice_file)[0]
+                except Exception:
+                    df_invoice = pd.read_excel(uploaded_invoice_file, engine='xlrd')
+            else:
+                df_invoice = pd.read_excel(uploaded_invoice_file)
 
-        if unmatched_transport_ids:
-            st.warning(f"Tìm thấy {len(unmatched_transport_ids)} Booking ID chỉ có trong file Transport (không có trong file Hóa đơn):")
-            with st.expander("Xem danh sách ID bị thừa từ file Transport"):
-                st.dataframe(pd.DataFrame(sorted(list(unmatched_transport_ids)), columns=["Booking ID"]))
+            df_transport.columns = df_transport.columns.str.strip()
+            df_invoice.columns = df_invoice.columns.str.strip()
 
-        if unmatched_invoice_ids:
-            st.warning(f"Tìm thấy {len(unmatched_invoice_ids)} Booking ID chỉ có trong file Hóa đơn (không có trong file Transport):")
-            with st.expander("Xem danh sách ID bị thừa từ file Hóa đơn"):
-                st.dataframe(pd.DataFrame(sorted(list(unmatched_invoice_ids)), columns=["Booking ID"]))
+            if len(df_transport.columns) > 9:
+                pickup_col_name = df_transport.columns[7]
+                dropoff_col_name = df_transport.columns[9]
+                df_transport.rename(columns={
+                    pickup_col_name: 'GEMINI_PICKUP_ADDRESS',
+                    dropoff_col_name: 'GEMINI_DROPOFF_ADDRESS'
+                }, inplace=True)
+
+            if df_invoice.shape[1] < 13:
+                st.error(f"File Hóa đơn không có đủ 13 cột. Chỉ tìm thấy {df_invoice.shape[1]} cột.")
+                st.stop()
+            rename_dict = {
+                df_invoice.columns[1]: 'pdf_link_key',
+                df_invoice.columns[12]: 'summary_ma_nhan_hoa_don'
+            }
+            if len(df_invoice.columns) > 4:
+                rename_dict[df_invoice.columns[4]] = 'GEMINI_NGAY_HD_INVOICE'
+                rename_dict[df_invoice.columns[5]] = 'HINH_THUC_TT'
+                rename_dict[df_invoice.columns[6]] = 'TIEN_TRC_THUE'
+                rename_dict[df_invoice.columns[7]] = 'TIEN_THUE8'
+                rename_dict[df_invoice.columns[8]] = 'TONG_TIEN'
+                rename_dict[df_invoice.columns[15]] = 'NGAY_BOOKING'
+                rename_dict[df_invoice.columns[16]] = 'SO_HOA_DON'
+            df_invoice.rename(columns=rename_dict, inplace=True)
+
+            # Check for unmatched Booking IDs between Transport and Invoice files
+            transport_ids = set(df_transport['Booking ID'].dropna())
+            invoice_ids = set(df_invoice['Booking'].dropna())
+
+            unmatched_transport_ids = transport_ids - invoice_ids
+            unmatched_invoice_ids = invoice_ids - transport_ids
+
+            if unmatched_transport_ids:
+                st.warning(f"Tìm thấy {len(unmatched_transport_ids)} Booking ID chỉ có trong file Transport (không có trong file Hóa đơn):")
+                with st.expander("Xem danh sách ID bị thừa từ file Transport"):
+                    st.dataframe(pd.DataFrame(sorted(list(unmatched_transport_ids)), columns=["Booking ID"]))
+
+            if unmatched_invoice_ids:
+                st.warning(f"Tìm thấy {len(unmatched_invoice_ids)} Booking ID chỉ có trong file Hóa đơn (không có trong file Transport):")
+                with st.expander("Xem danh sách ID bị thừa từ file Hóa đơn"):
+                    st.dataframe(pd.DataFrame(sorted(list(unmatched_invoice_ids)), columns=["Booking ID"]))
 
 
-        matching_ids = list(set(df_transport['Booking ID'].dropna()) & set(df_invoice['Booking'].dropna()))
-        if not matching_ids:
-            st.warning("Không tìm thấy Booking ID nào trùng khớp giữa hai file đầu vào.")
-            st.stop()
+            matching_ids = list(set(df_transport['Booking ID'].dropna()) & set(df_invoice['Booking'].dropna()))
+            if not matching_ids:
+                st.warning("Không tìm thấy Booking ID nào trùng khớp giữa hai file đầu vào.")
+                st.stop()
 
-        df_merged = pd.merge(df_transport[df_transport['Booking ID'].isin(matching_ids)], df_invoice[df_invoice['Booking'].isin(matching_ids)], left_on='Booking ID', right_on='Booking', suffixes=('_transport', '_invoice'))
-        df_merged['Đơn vị'] = df_merged['Employee Name'].map(employee_to_unit_map)
-        df_merged['Đơn vị'].fillna('Không xác định', inplace=True)
+            df_merged = pd.merge(df_transport[df_transport['Booking ID'].isin(matching_ids)], df_invoice[df_invoice['Booking'].isin(matching_ids)], left_on='Booking ID', right_on='Booking', suffixes=('_transport', '_invoice'))
+            df_merged['Đơn vị'] = df_merged['Employee Name'].map(employee_to_unit_map)
+            df_merged['Đơn vị'].fillna('Không xác định', inplace=True)
 
-        # --- 3. XỬ LÝ FOLDER PDF (NẾU CÓ) ---
-        count_no_pdf = 0
-        if uploaded_zip_file is not None:
-            pdf_data = []
-            with zipfile.ZipFile(uploaded_zip_file, 'r') as zip_ref:
-                pdf_file_names = [name for name in zip_ref.namelist() if name.lower().endswith('.pdf') and not name.startswith('__MACOSX')]
-                st.info(f"Bắt đầu xử lý {len(pdf_file_names)} file PDF từ tệp .zip...")
-                progress_bar = st.progress(0, text="Đang xử lý file PDF...")
-                for i, filename in enumerate(pdf_file_names):
-                    try:
-                        key_from_filename = os.path.basename(filename).split('_')[2]
-                        with zip_ref.open(filename) as pdf_file:
-                            pdf_content = pdf_file.read()
-                            pdf_reader = pypdf.PdfReader(io.BytesIO(pdf_content))
-                            text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                            found_code = "Không tìm thấy trong PDF"
-                            if "Mã nhận hóa đơn" in text:
-                                parts = text.split("Mã nhận hóa đơn")
-                                if len(parts) > 1:
-                                    code = parts[1].split('\n')[0].replace(":", "").strip()
-                                    if code: found_code = code
-                            ngay_hd_str = "Không tìm thấy"
-                            match = re.search(r'Ngày\s*(\d{1,2})\s*tháng\s*(\d{1,2})\s*năm\s*(\d{4})', text, re.IGNORECASE)
-                            if match:
-                                day, month, year = match.groups()
-                                ngay_hd_str = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                            pdf_data.append({'pdf_link_key_str': key_from_filename, 'Mã hóa đơn từ PDF': found_code, 'Ngay_HD_pdf': ngay_hd_str, 'pdf_content': pdf_content, 'pdf_filename': os.path.basename(filename)})
-                    except Exception as e:
-                        st.warning(f"Lỗi khi đọc file {filename} trong zip: {e}")
-                    progress_bar.progress((i + 1) / len(pdf_file_names), text=f"Đang xử lý: {os.path.basename(filename)}")
-            if pdf_data:
-                df_pdf_data = pd.DataFrame(pdf_data)
-                df_merged['pdf_link_key_str'] = df_merged['pdf_link_key'].astype(str)
-
-                # Check for PDF files that don't match any invoice row
-                merged_keys = set(df_merged['pdf_link_key_str'])
-                pdf_keys = set(df_pdf_data['pdf_link_key_str'])
-                unmatched_pdf_keys = pdf_keys - merged_keys
-
-                if unmatched_pdf_keys:
-                    unmatched_pdf_files = df_pdf_data[df_pdf_data['pdf_link_key_str'].isin(unmatched_pdf_keys)]
-                    st.warning(f"Tìm thấy {len(unmatched_pdf_files)} file PDF không khớp với bất kỳ dòng nào trong file Hóa đơn:")
-                    with st.expander("Xem danh sách file PDF bị thừa"):
-                        st.dataframe(unmatched_pdf_files[['pdf_filename', 'pdf_link_key_str']])
-
-                df_merged = pd.merge(df_merged, df_pdf_data, on='pdf_link_key_str', how='left')
-                count_no_pdf = df_merged['pdf_filename'].isnull().sum()
-
-        # --- 3.1. XỬ LÝ FOLDER XML (NẾU CÓ) ---
-        if uploaded_xml_zip_file is not None:
-            xml_data = []
-            with zipfile.ZipFile(uploaded_xml_zip_file, 'r') as zip_ref:
-                xml_file_names = [name for name in zip_ref.namelist() if name.lower().endswith('.xml') and not name.startswith('__MACOSX')]
-                st.info(f"Bắt đầu xử lý {len(xml_file_names)} file XML từ tệp .zip...")
-                progress_bar_xml = st.progress(0, text="Đang xử lý file XML...")
-                for i, filename in enumerate(xml_file_names):
-                    try:
-                        base = os.path.basename(filename)
-                        key_from_filename = ''
+            # --- 3. XỬ LÝ FOLDER PDF (NẾU CÓ) ---
+            count_no_pdf = 0
+            if uploaded_zip_file is not None:
+                pdf_data = []
+                with zipfile.ZipFile(uploaded_zip_file, 'r') as zip_ref:
+                    pdf_file_names = [name for name in zip_ref.namelist() if name.lower().endswith('.pdf') and not name.startswith('__MACOSX')]
+                    st.info(f"Bắt đầu xử lý {len(pdf_file_names)} file PDF từ tệp .zip...")
+                    progress_bar = st.progress(0, text="Đang xử lý file PDF...")
+                    for i, filename in enumerate(pdf_file_names):
                         try:
-                            # Attempt 1: PDF-style naming (e.g., 1_C25MGA_2565515_....xml)
-                            key_from_filename = base.split('_')[2]
-                        except IndexError:
-                            # Attempt 2: Simple naming (e.g., 2565515.xml)
-                            key_from_filename = base.split('.')[0]
-
-                        if not key_from_filename.strip():
-                            st.warning(f"Không thể lấy key từ tên file XML: '{filename}'. Bỏ qua file này.")
-                            continue
-
-                        with zip_ref.open(filename) as xml_file:
-                            xml_content = xml_file.read()
-                            text = xml_content.decode('utf-8', errors='ignore')
-
-                            # Extract invoice code from XML using regex on common tags
-                            found_code = "Không tìm thấy trong XML"
-                            code_match = re.search(r'<InvoiceCode>(.*?)</InvoiceCode>', text, re.IGNORECASE) or \
-                                         re.search(r'<MaNhanHoaDon>(.*?)</MaNhanHoaDon>', text, re.IGNORECASE) or \
-                                         re.search(r'<TransactionID>(.*?)</TransactionID>', text, re.IGNORECASE) or \
-                                         re.search(r'<Fkey>(.*?)</Fkey>', text, re.IGNORECASE) # Another common one
-                            if code_match:
-                                found_code = code_match.group(1).strip()
-
-                            # Extract invoice date from XML using regex
-                            ngay_hd_str = "Không tìm thấy"
-                            date_match = re.search(r'<IssuedDate>(.*?)</IssuedDate>', text, re.IGNORECASE) # YYYY-MM-DD
-                            if date_match:
-                                try:
-                                    # Handle various date formats that might be in the tag
-                                    dt = pd.to_datetime(date_match.group(1))
-                                    ngay_hd_str = dt.strftime('%d/%m/%Y')
-                                except Exception:
-                                    # If parsing fails, try to use the raw value
-                                    ngay_hd_str = date_match.group(1).strip()
-                            else:
-                                # Fallback to the same regex as for PDFs
+                            key_from_filename = os.path.basename(filename).split('_')[2]
+                            with zip_ref.open(filename) as pdf_file:
+                                pdf_content = pdf_file.read()
+                                pdf_reader = pypdf.PdfReader(io.BytesIO(pdf_content))
+                                text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
+                                found_code = "Không tìm thấy trong PDF"
+                                if "Mã nhận hóa đơn" in text:
+                                    parts = text.split("Mã nhận hóa đơn")
+                                    if len(parts) > 1:
+                                        code = parts[1].split('\n')[0].replace(":", "").strip()
+                                        if code: found_code = code
+                                ngay_hd_str = "Không tìm thấy"
                                 match = re.search(r'Ngày\s*(\d{1,2})\s*tháng\s*(\d{1,2})\s*năm\s*(\d{4})', text, re.IGNORECASE)
                                 if match:
                                     day, month, year = match.groups()
                                     ngay_hd_str = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-
-                            xml_data.append({
-                                'pdf_link_key_str': key_from_filename,
-                                'Mã hóa đơn từ XML': found_code,
-                                'Ngay_HD_xml': ngay_hd_str,
-                                'xml_content': xml_content,
-                                'xml_filename': os.path.basename(filename)
-                            })
-                    except Exception as e:
-                        st.warning(f"Lỗi khi đọc file XML {filename} trong zip: {e}")
-                    progress_bar_xml.progress((i + 1) / len(xml_file_names), text=f"Đang xử lý: {os.path.basename(filename)}")
-            
-            if xml_data:
-                df_xml_data = pd.DataFrame(xml_data)
-                if 'pdf_link_key_str' not in df_merged.columns:
+                                pdf_data.append({'pdf_link_key_str': key_from_filename, 'Mã hóa đơn từ PDF': found_code, 'Ngay_HD_pdf': ngay_hd_str, 'pdf_content': pdf_content, 'pdf_filename': os.path.basename(filename)})
+                        except Exception as e:
+                            st.warning(f"Lỗi khi đọc file {filename} trong zip: {e}")
+                        progress_bar.progress((i + 1) / len(pdf_file_names), text=f"Đang xử lý: {os.path.basename(filename)}")
+                if pdf_data:
+                    df_pdf_data = pd.DataFrame(pdf_data)
                     df_merged['pdf_link_key_str'] = df_merged['pdf_link_key'].astype(str)
+
+                    # Check for PDF files that don't match any invoice row
+                    merged_keys = set(df_merged['pdf_link_key_str'])
+                    pdf_keys = set(df_pdf_data['pdf_link_key_str'])
+                    unmatched_pdf_keys = pdf_keys - merged_keys
+
+                    if unmatched_pdf_keys:
+                        unmatched_pdf_files = df_pdf_data[df_pdf_data['pdf_link_key_str'].isin(unmatched_pdf_keys)]
+                        st.warning(f"Tìm thấy {len(unmatched_pdf_files)} file PDF không khớp với bất kỳ dòng nào trong file Hóa đơn:")
+                        with st.expander("Xem danh sách file PDF bị thừa"):
+                            st.dataframe(unmatched_pdf_files[['pdf_filename', 'pdf_link_key_str']])
+
+                    df_merged = pd.merge(df_merged, df_pdf_data, on='pdf_link_key_str', how='left')
+                    count_no_pdf = df_merged['pdf_filename'].isnull().sum()
+
+            # --- 3.1. XỬ LÝ FOLDER XML (NẾU CÓ) ---
+            if uploaded_xml_zip_file is not None:
+                xml_data = []
+                with zipfile.ZipFile(uploaded_xml_zip_file, 'r') as zip_ref:
+                    xml_file_names = [name for name in zip_ref.namelist() if name.lower().endswith('.xml') and not name.startswith('__MACOSX')]
+                    st.info(f"Bắt đầu xử lý {len(xml_file_names)} file XML từ tệp .zip...")
+                    progress_bar_xml = st.progress(0, text="Đang xử lý file XML...")
+                    for i, filename in enumerate(xml_file_names):
+                        try:
+                            base = os.path.basename(filename)
+                            key_from_filename = ''
+                            try:
+                                # Attempt 1: PDF-style naming (e.g., 1_C25MGA_2565515_....xml)
+                                key_from_filename = base.split('_')[2]
+                            except IndexError:
+                                # Attempt 2: Simple naming (e.g., 2565515.xml)
+                                key_from_filename = base.split('.')[0]
+
+                            if not key_from_filename.strip():
+                                st.warning(f"Không thể lấy key từ tên file XML: '{filename}'. Bỏ qua file này.")
+                                continue
+
+                            with zip_ref.open(filename) as xml_file:
+                                xml_content = xml_file.read()
+                                text = xml_content.decode('utf-8', errors='ignore')
+
+                                # Extract invoice code from XML using regex on common tags
+                                found_code = "Không tìm thấy trong XML"
+                                code_match = re.search(r'<InvoiceCode>(.*?)</InvoiceCode>', text, re.IGNORECASE) or \
+                                             re.search(r'<MaNhanHoaDon>(.*?)</MaNhanHoaDon>', text, re.IGNORECASE) or \
+                                             re.search(r'<TransactionID>(.*?)</TransactionID>', text, re.IGNORECASE) or \
+                                             re.search(r'<Fkey>(.*?)</Fkey>', text, re.IGNORECASE) # Another common one
+                                if code_match:
+                                    found_code = code_match.group(1).strip()
+
+                                # Extract invoice date from XML using regex
+                                ngay_hd_str = "Không tìm thấy"
+                                date_match = re.search(r'<IssuedDate>(.*?)</IssuedDate>', text, re.IGNORECASE) # YYYY-MM-DD
+                                if date_match:
+                                    try:
+                                        # Handle various date formats that might be in the tag
+                                        dt = pd.to_datetime(date_match.group(1))
+                                        ngay_hd_str = dt.strftime('%d/%m/%Y')
+                                    except Exception:
+                                        # If parsing fails, try to use the raw value
+                                        ngay_hd_str = date_match.group(1).strip()
+                                else:
+                                    # Fallback to the same regex as for PDFs
+                                    match = re.search(r'Ngày\s*(\d{1,2})\s*tháng\s*(\d{1,2})\s*năm\s*(\d{4})', text, re.IGNORECASE)
+                                    if match:
+                                        day, month, year = match.groups()
+                                        ngay_hd_str = f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+
+                                xml_data.append({
+                                    'pdf_link_key_str': key_from_filename,
+                                    'Mã hóa đơn từ XML': found_code,
+                                    'Ngay_HD_xml': ngay_hd_str,
+                                    'xml_content': xml_content,
+                                    'xml_filename': os.path.basename(filename)
+                                })
+                        except Exception as e:
+                            st.warning(f"Lỗi khi đọc file XML {filename} trong zip: {e}")
+                        progress_bar_xml.progress((i + 1) / len(xml_file_names), text=f"Đang xử lý: {os.path.basename(filename)}")
                 
-                # Check for XML files that don't match any invoice row
-                merged_keys_for_xml = set(df_merged['pdf_link_key_str'])
-                xml_keys = set(df_xml_data['pdf_link_key_str'])
-                unmatched_xml_keys = xml_keys - merged_keys_for_xml
+                if xml_data:
+                    df_xml_data = pd.DataFrame(xml_data)
+                    if 'pdf_link_key_str' not in df_merged.columns:
+                        df_merged['pdf_link_key_str'] = df_merged['pdf_link_key'].astype(str)
+                    
+                    # Check for XML files that don't match any invoice row
+                    merged_keys_for_xml = set(df_merged['pdf_link_key_str'])
+                    xml_keys = set(df_xml_data['pdf_link_key_str'])
+                    unmatched_xml_keys = xml_keys - merged_keys_for_xml
 
-                if unmatched_xml_keys:
-                    unmatched_xml_files = df_xml_data[df_xml_data['pdf_link_key_str'].isin(unmatched_xml_keys)]
-                    st.warning(f"Tìm thấy {len(unmatched_xml_files)} file XML không khớp với bất kỳ dòng nào trong file Hóa đơn:")
-                    with st.expander("Xem danh sách file XML bị thừa"):
-                        st.dataframe(unmatched_xml_files[['xml_filename', 'pdf_link_key_str']])
+                    if unmatched_xml_keys:
+                        unmatched_xml_files = df_xml_data[df_xml_data['pdf_link_key_str'].isin(unmatched_xml_keys)]
+                        st.warning(f"Tìm thấy {len(unmatched_xml_files)} file XML không khớp với bất kỳ dòng nào trong file Hóa đơn:")
+                        with st.expander("Xem danh sách file XML bị thừa"):
+                            st.dataframe(unmatched_xml_files[['xml_filename', 'pdf_link_key_str']])
 
-                df_merged = pd.merge(df_merged, df_xml_data, on='pdf_link_key_str', how='left')
+                    df_merged = pd.merge(df_merged, df_xml_data, on='pdf_link_key_str', how='left')
 
-        # --- 4. THỐNG KÊ VÀ HIỂN THỊ ---
-        if count_no_pdf > 0:
-            st.warning(f"### ⚠️ Chú ý: Có {count_no_pdf} hóa đơn không có file PDF tương ứng.")
-            with st.expander("Xem danh sách và thống kê các hóa đơn thiếu PDF"):
-                df_missing_pdfs = df_merged[df_merged['pdf_filename'].isnull()]
-                
-                # 1. Display statistics table
-                st.markdown("#### Thống kê theo Đơn vị")
-                missing_stats = df_missing_pdfs.groupby('Đơn vị').agg(
-                    so_hoa_don_thieu=('Booking ID', 'count'),
-                    tong_tien_thieu=('Total Fare', 'sum')
-                ).reset_index()
-                missing_stats.rename(columns={
-                    'so_hoa_don_thieu': 'Số hóa đơn thiếu PDF',
-                    'tong_tien_thieu': 'Tổng tiền (ước tính)'
-                }, inplace=True)
-                st.dataframe(missing_stats)
+            # --- 4. THỐNG KÊ VÀ HIỂN THỊ ---
+            if count_no_pdf > 0:
+                st.warning(f"### ⚠️ Chú ý: Có {count_no_pdf} hóa đơn không có file PDF tương ứng.")
+                with st.expander("Xem danh sách và thống kê các hóa đơn thiếu PDF"):
+                    df_missing_pdfs = df_merged[df_merged['pdf_filename'].isnull()]
+                    
+                    # 1. Display statistics table
+                    st.markdown("#### Thống kê theo Đơn vị")
+                    missing_stats = df_missing_pdfs.groupby('Đơn vị').agg(
+                        so_hoa_don_thieu=('Booking ID', 'count'),
+                        tong_tien_thieu=('Total Fare', 'sum')
+                    ).reset_index()
+                    missing_stats.rename(columns={
+                        'so_hoa_don_thieu': 'Số hóa đơn thiếu PDF',
+                        'tong_tien_thieu': 'Tổng tiền (ước tính)'
+                    }, inplace=True)
+                    st.dataframe(missing_stats)
 
-                # 2. Display the raw list
-                st.markdown("---")
-                st.markdown("#### Danh sách chi tiết")
-                
-                cols_to_show = ['Booking ID', 'Employee Name', 'Đơn vị', 'pdf_link_key', 'Total Fare']
-                date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
-                available_date_col = find_col(df_missing_pdfs, date_cols)
-                if available_date_col:
-                    cols_to_show.append(available_date_col)
+                    # 2. Display the raw list
+                    st.markdown("---")
+                    st.markdown("#### Danh sách chi tiết")
+                    
+                    cols_to_show = ['Booking ID', 'Employee Name', 'Đơn vị', 'pdf_link_key', 'Total Fare']
+                    date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
+                    available_date_col = find_col(df_missing_pdfs, date_cols)
+                    if available_date_col:
+                        cols_to_show.append(available_date_col)
 
-                existing_cols_to_show = [col for col in cols_to_show if col in df_missing_pdfs.columns]
-                st.dataframe(df_missing_pdfs[existing_cols_to_show])
+                    existing_cols_to_show = [col for col in cols_to_show if col in df_missing_pdfs.columns]
+                    st.dataframe(df_missing_pdfs[existing_cols_to_show])
 
-        st.header("Kết quả đối chiếu")
+            st.header("Kết quả đối chiếu")
 
-        with st.container(border=True):
-            st.subheader("Bảng thống kê tổng hợp")
+            with st.container(border=True):
+                st.subheader("Bảng thống kê tổng hợp")
 
-            if 'Employee Name' not in df_merged.columns:
-                st.error("Không thể tạo bảng thống kê: Thiếu cột 'Employee Name' trong dữ liệu đã hợp nhất.")
-            else:
-                agg_dict = {}
-                if 'Booking ID' in df_merged.columns:
-                    agg_dict['So chuyen'] = ('Booking ID', 'count')
-                if 'Total Fare' in df_merged.columns:
-                    agg_dict['Tong tien (VND)'] = ('Total Fare', 'sum')
-
-                if not agg_dict:
-                    st.warning("Không thể tạo bảng thống kê: Thiếu cả cột 'Booking ID' và 'Total Fare'.")
+                if 'Employee Name' not in df_merged.columns:
+                    st.error("Không thể tạo bảng thống kê: Thiếu cột 'Employee Name' trong dữ liệu đã hợp nhất.")
                 else:
-                    summary_df = df_merged.groupby('Employee Name').agg(**agg_dict).reset_index()
+                    agg_dict = {}
+                    if 'Booking ID' in df_merged.columns:
+                        agg_dict['So chuyen'] = ('Booking ID', 'count')
+                    if 'Total Fare' in df_merged.columns:
+                        agg_dict['Tong tien (VND)'] = ('Total Fare', 'sum')
 
-                    if 'Tong tien (VND)' in summary_df.columns:
-                        summary_df = summary_df.sort_values('Tong tien (VND)', ascending=False).reset_index(drop=True)
-                    elif 'So chuyen' in summary_df.columns:
-                        summary_df = summary_df.sort_values('So chuyen', ascending=False).reset_index(drop=True)
-
-                    if summary_df.empty:
-                        st.info("Không có đủ dữ liệu để thống kê.")
+                    if not agg_dict:
+                        st.warning("Không thể tạo bảng thống kê: Thiếu cả cột 'Booking ID' và 'Total Fare'.")
                     else:
-                        display_cols_spec = {"Tên Người dùng": 3}
-                        if 'So chuyen' in summary_df.columns:
-                            display_cols_spec["Số chuyến"] = 1
+                        summary_df = df_merged.groupby('Employee Name').agg(**agg_dict).reset_index()
+
                         if 'Tong tien (VND)' in summary_df.columns:
-                            display_cols_spec["Tổng tiền (VND)"] = 2
+                            summary_df = summary_df.sort_values('Tong tien (VND)', ascending=False).reset_index(drop=True)
+                        elif 'So chuyen' in summary_df.columns:
+                            summary_df = summary_df.sort_values('So chuyen', ascending=False).reset_index(drop=True)
 
-                        header_cols = st.columns(list(display_cols_spec.values()))
-                        for i, col_name in enumerate(display_cols_spec.keys()):
-                            header_cols[i].markdown(f"**{col_name}**")
+                        if summary_df.empty:
+                            st.info("Không có đủ dữ liệu để thống kê.")
+                        else:
+                            display_cols_spec = {"Tên Người dùng": 3}
+                            if 'So chuyen' in summary_df.columns:
+                                display_cols_spec["Số chuyến"] = 1
+                            if 'Tong tien (VND)' in summary_df.columns:
+                                display_cols_spec["Tổng tiền (VND)"] = 2
 
-                        current_employees = summary_df['Employee Name'].tolist()
-                        expanded_state = st.session_state.setdefault("expanded_employees", {})
-                        stale_keys = [name for name in expanded_state.keys() if name not in current_employees]
-                        for name in stale_keys:
-                            del expanded_state[name]
-                        for name in current_employees:
-                            expanded_state.setdefault(name, False)
+                            header_cols = st.columns(list(display_cols_spec.values()))
+                            for i, col_name in enumerate(display_cols_spec.keys()):
+                                header_cols[i].markdown(f"**{col_name}**")
 
-                        def toggle_employee_expansion(employee_name: str) -> None:
-                            state = st.session_state["expanded_employees"]
-                            state[employee_name] = not state.get(employee_name, False)
+                            current_employees = summary_df['Employee Name'].tolist()
+                            expanded_state = st.session_state.setdefault("expanded_employees", {})
+                            stale_keys = [name for name in expanded_state.keys() if name not in current_employees]
+                            for name in stale_keys:
+                                del expanded_state[name]
+                            for name in current_employees:
+                                expanded_state.setdefault(name, False)
 
-                        date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngay', 'Date & Time (GMT+7)']
-                        date_col_name = find_col(df_merged, date_cols)
-                        pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
-                        dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
+                            def toggle_employee_expansion(employee_name: str) -> None:
+                                state = st.session_state["expanded_employees"]
+                                state[employee_name] = not state.get(employee_name, False)
 
-                        for idx, row in summary_df.iterrows():
-                            employee_name = row['Employee Name']
-                            expanded = st.session_state["expanded_employees"][employee_name]
-                            row_container = st.container()
-                            with row_container:
-                                row_cols = st.columns(list(display_cols_spec.values()))
-                                with row_cols[0]:
-                                    label = f"{'▼' if expanded else '►'} {employee_name}"
-                                    st.button(
-                                        label,
-                                        key=f"summary_row_{idx}",
-                                        use_container_width=True,
-                                        on_click=toggle_employee_expansion,
-                                        args=(employee_name,),
-                                    )
-                                
-                                current_col_index = 1
-                                if 'So chuyen' in summary_df.columns:
-                                    with row_cols[current_col_index]:
-                                        st.write(int(row['So chuyen']))
-                                    current_col_index += 1
-                                if 'Tong tien (VND)' in summary_df.columns:
-                                    with row_cols[current_col_index]:
-                                        st.write(f"{row['Tong tien (VND)']:,.0f}")
+                            date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
+                            date_col_name = find_col(df_merged, date_cols)
+                            pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
+                            dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
 
-                            if st.session_state["expanded_employees"].get(employee_name):
-                                employee_df = df_merged[df_merged['Employee Name'] == employee_name]
-                                usage_date_col = 'NGAY_BOOKING' if 'NGAY_BOOKING' in employee_df.columns else date_col_name
-                                detail_cols = [
-                                    'Employee Name', 'Booking ID', pickup_col_name, dropoff_col_name,
-                                    'GEMINI_NGAY_HD_INVOICE', 'HINH_THUC_TT', 'TIEN_TRC_THUE',
-                                    'TIEN_THUE8', 'TONG_TIEN', usage_date_col, 'SO_HOA_DON',
-                                ]
-                                final_cols = [col for col in detail_cols if col and col in employee_df.columns]
+                            for idx, row in summary_df.iterrows():
+                                employee_name = row['Employee Name']
+                                expanded = st.session_state["expanded_employees"][employee_name]
+                                row_container = st.container()
+                                with row_container:
+                                    row_cols = st.columns(list(display_cols_spec.values()))
+                                    with row_cols[0]:
+                                        label = f"{'▼' if expanded else '►'} {employee_name}"
+                                        st.button(
+                                            label,
+                                            key=f"summary_row_{idx}",
+                                            use_container_width=True,
+                                            on_click=toggle_employee_expansion,
+                                            args=(employee_name,),
+                                        )
+                                    
+                                    current_col_index = 1
+                                    if 'So chuyen' in summary_df.columns:
+                                        with row_cols[current_col_index]:
+                                            st.write(int(row['So chuyen']))
+                                        current_col_index += 1
+                                    if 'Tong tien (VND)' in summary_df.columns:
+                                        with row_cols[current_col_index]:
+                                            st.write(f"{row['Tong tien (VND)']:, .0f}")
 
-                                detail_df = employee_df[final_cols].copy()
-                                detail_df.insert(0, "STT", range(1, len(detail_df) + 1))
-                                if 'SO_HOA_DON' in detail_df.columns:
-                                    detail_df['SO_HOA_DON'] = detail_df['SO_HOA_DON'].astype(str).str.split('_').str[0].replace('nan', '')
+                                if st.session_state["expanded_employees"].get(employee_name):
+                                    employee_df = df_merged[df_merged['Employee Name'] == employee_name]
+                                    usage_date_col = 'NGAY_BOOKING' if 'NGAY_BOOKING' in employee_df.columns else date_col_name
+                                    detail_cols = [
+                                        'Employee Name', 'Booking ID', pickup_col_name, dropoff_col_name,
+                                        'GEMINI_NGAY_HD_INVOICE', 'HINH_THUC_TT', 'TIEN_TRC_THUE',
+                                        'TIEN_THUE8', 'TONG_TIEN', usage_date_col, 'SO_HOA_DON',
+                                    ]
+                                    final_cols = [col for col in detail_cols if col and col in employee_df.columns]
 
-                                rename_map = {
-                                    'Employee Name': 'Người sử dụng', 'Booking ID': 'Mã đặt chỗ',
-                                    'GEMINI_PICKUP_ADDRESS': 'Điểm đón', 'GEMINI_DROPOFF_ADDRESS': 'Điểm đến',
-                                    'GEMINI_NGAY_HD_INVOICE': 'Ngày HĐ', 'HINH_THUC_TT': 'Hình thức thanh toán',
-                                    'TIEN_TRC_THUE': 'Tổng tiền trước thuế', 'TIEN_THUE8': 'Tổng tiền thuế (8%)',
-                                    'TONG_TIEN': 'Tổng tiền đã có thuế', 'NGAY_BOOKING': 'Ngày sử dụng',
-                                    'SO_HOA_DON': 'Số hóa đơn',
-                                }
-                                if usage_date_col and usage_date_col not in rename_map:
-                                    rename_map[usage_date_col] = 'Ngày sử dụng'
-                                detail_df.rename(columns={k: v for k, v in rename_map.items() if k in detail_df.columns}, inplace=True)
+                                    detail_df = employee_df[final_cols].copy()
+                                    detail_df.insert(0, "STT", range(1, len(detail_df) + 1))
+                                    if 'SO_HOA_DON' in detail_df.columns:
+                                        detail_df['SO_HOA_DON'] = detail_df['SO_HOA_DON'].astype(str).str.split('_').str[0].replace('nan', '')
 
-                                employee_display_col = rename_map.get('Employee Name', 'Employee Name')
-                                money_cols = [
-                                    rename_map.get('TIEN_TRC_THUE', 'TIEN_TRC_THUE'),
-                                    rename_map.get('TIEN_THUE8', 'TIEN_THUE8'),
-                                    rename_map.get('TONG_TIEN', 'TONG_TIEN'),
-                                ]
-                                
-                                # Only add total row if there are money columns to sum
-                                if any(col in detail_df.columns for col in money_cols):
-                                    total_row = {col: "" for col in detail_df.columns}
-                                    total_row['STT'] = ""
-                                    if employee_display_col in total_row:
-                                        total_row[employee_display_col] = 'Tổng cộng'
+                                    rename_map = {
+                                        'Employee Name': 'Người sử dụng', 'Booking ID': 'Mã đặt chỗ',
+                                        'GEMINI_PICKUP_ADDRESS': 'Điểm đón', 'GEMINI_DROPOFF_ADDRESS': 'Điểm đến',
+                                        'GEMINI_NGAY_HD_INVOICE': 'Ngày HĐ', 'HINH_THUC_TT': 'Hình thức thanh toán',
+                                        'TIEN_TRC_THUE': 'Tổng tiền trước thuế', 'TIEN_THUE8': 'Tổng tiền thuế (8%)',
+                                        'TONG_TIEN': 'Tổng tiền đã có thuế', 'NGAY_BOOKING': 'Ngày sử dụng',
+                                        'SO_HOA_DON': 'Số hóa đơn',
+                                    }
+                                    if usage_date_col and usage_date_col not in rename_map:
+                                        rename_map[usage_date_col] = 'Ngày sử dụng'
+                                    detail_df.rename(columns={k: v for k, v in rename_map.items() if k in detail_df.columns}, inplace=True)
+
+                                    employee_display_col = rename_map.get('Employee Name', 'Employee Name')
+                                    money_cols = [
+                                        rename_map.get('TIEN_TRC_THUE', 'TIEN_TRC_THUE'),
+                                        rename_map.get('TIEN_THUE8', 'TIEN_THUE8'),
+                                        rename_map.get('TONG_TIEN', 'TONG_TIEN'),
+                                    ]
+                                    
+                                    # Only add total row if there are money columns to sum
+                                    if any(col in detail_df.columns for col in money_cols):
+                                        total_row = {col: "" for col in detail_df.columns}
+                                        total_row['STT'] = ""
+                                        if employee_display_col in total_row:
+                                            total_row[employee_display_col] = 'Tổng cộng'
+                                        for money_col in money_cols:
+                                            if money_col in detail_df.columns:
+                                                numeric_values = pd.to_numeric(detail_df[money_col], errors='coerce')
+                                                total_row[money_col] = numeric_values.sum()
+                                        detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
+
                                     for money_col in money_cols:
                                         if money_col in detail_df.columns:
-                                            numeric_values = pd.to_numeric(detail_df[money_col], errors='coerce')
-                                            total_row[money_col] = numeric_values.sum()
-                                    detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
+                                            numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
+                                            detail_df[money_col] = numeric_series.apply(
+                                                lambda value: f"{value:, .0f}" if pd.notna(value) else ""
+                                            )
 
-                                for money_col in money_cols:
-                                    if money_col in detail_df.columns:
-                                        numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
-                                        detail_df[money_col] = numeric_series.apply(
-                                            lambda value: f"{value:,.0f}" if pd.notna(value) else ""
-                                        )
+                                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
-                                st.dataframe(detail_df, use_container_width=True, hide_index=True)
-
-                            st.markdown('<hr style="margin-top:0.25rem; margin-bottom:0.25rem;">', unsafe_allow_html=True)
+                                st.markdown('<hr style="margin-top:0.25rem; margin-bottom:0.25rem;">', unsafe_allow_html=True)
                 try:
                     date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
                     date_col_name = find_col(df_merged, date_cols)
@@ -664,7 +685,10 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
                                             to_field = ", ".join(recipient_emails)
                                             with st.spinner(f"Đang xác thực và gửi email đến {to_field}..."):
                                                 try:
-                                                    creds = get_google_credentials(st.session_state.credentials_json_content)
+                                                    creds, _ = get_google_credentials(st.session_state.credentials_json_content)
+                                                    if not creds:
+                                                        st.error("Không thể lấy thông tin đăng nhập. Vui lòng thử đăng nhập lại.")
+                                                        st.stop()
                                                     df_unit = df_merged[df_merged[unit_col] == selected_unit_email]
                                                     
                                                     # 1. Create Excel attachment
@@ -733,7 +757,10 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
                                     st.error("Vui lòng tải lên file Email Mapping hợp lệ trước khi gửi.")
                                 else:
                                     with st.spinner("Bắt đầu quá trình gửi email hàng loạt..."):
-                                        creds = get_google_credentials(st.session_state.credentials_json_content)
+                                        creds, _ = get_google_credentials(st.session_state.credentials_json_content)
+                                        if not creds:
+                                            st.error("Không thể lấy thông tin đăng nhập. Vui lòng thử đăng nhập lại.")
+                                            st.stop()
                                         units_to_email = sorted(df_merged[unit_col].dropna().unique())
                                         progress_bar = st.progress(0, text="Bắt đầu...")
                                         success_count = 0
@@ -810,6 +837,82 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
                 except Exception as e:
                     st.error(f"Đã xảy ra lỗi khi tạo file Bảng kê hoặc gửi mail: {e}")
 
+        except Exception as e:
+            st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
+            st.exception(e)
+
+# --- HÀM HỖ TRỢ ---
+def find_col(df, possibilities):
+    """Finds the first column in a dataframe that exists from a list of possibilities."""
+    for p in possibilities:
+        if p in df.columns:
+            return p
+    return None
+
+def load_mapping_data():
+    """Đọc file Excel mapping và trả về 2 dictionaries:
+    1. Employee Name -> Đơn vị
+    2. Đơn vị -> List of Emails
+    """
+    try:
+        df_mapping = pd.read_excel("FileMau/Tong hop _ Report.xlsx")
+        name_col = df_mapping.columns[1]
+        email_col = df_mapping.columns[3]
+        unit_col = df_mapping.columns[4]
+        df_mapping = df_mapping.dropna(subset=[name_col, unit_col])
+        employee_to_unit_map = df_mapping.set_index(name_col)[unit_col].to_dict()
+        df_email_map = df_mapping.dropna(subset=[email_col])
+        # Group by unit and create a list of unique emails for each unit
+        unit_to_email_map = df_email_map.groupby(unit_col)[email_col].apply(lambda x: list(x.unique())).to_dict()
+        return employee_to_unit_map, unit_to_email_map
+    except FileNotFoundError:
+        st.error("Lỗi: Không tìm thấy file mapping 'FileMau/Tong hop _ Report.xlsx'. Vui lòng đảm bảo file tồn tại.")
+        st.stop()
+    except IndexError:
+        st.error("Lỗi: File mapping 'Tong hop _ Report.xlsx' không có đủ 5 cột (để lấy cột B, D, và E).")
+        st.stop()
     except Exception as e:
-        st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
-        st.exception(e)
+        st.error(f"Lỗi khi đọc file mapping: {e}")
+        st.stop()
+
+def send_gmail_message(credentials, to, subject, body, attachments=None):
+    """Sends an email with multiple attachments using Gmail API."""
+    try:
+        # Lấy thông tin credentials từ session state
+        creds_json = json.loads(st.session_state['credentials'])
+        creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
+        
+        service = build('gmail', 'v1', credentials=creds)
+        user_profile = service.users().getProfile(userId='me').execute()
+        sender_email = user_profile['emailAddress']
+        sender_name = "Hệ thống đối chiếu tự động"
+        
+        message = MIMEMultipart()
+        message['to'] = to
+        message['from'] = formataddr((sender_name, sender_email))
+        message['subject'] = subject
+        msg_body = MIMEText(body, 'plain', 'utf-8')
+        message.attach(msg_body)
+
+        if attachments:
+            for attachment in attachments:
+                if attachment and attachment.get('data') and attachment.get('filename'):
+                    part = MIMEApplication(attachment['data'], Name=attachment['filename'])
+                    part['Content-Disposition'] = f'attachment; filename="{attachment["filename"]}"'
+                    message.attach(part)
+
+        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        create_message = {'raw': encoded_message}
+        send_message = (service.users().messages().send(userId="me", body=create_message).execute())
+    except HttpError as error:
+        st.error(f"An error occurred while sending email: {error}")
+        raise error
+    except KeyError:
+        st.error("Lỗi: Không tìm thấy thông tin đăng nhập trong session. Vui lòng đăng nhập lại.")
+        st.stop()
+
+# --- ĐIỂM BẮT ĐẦU CỦA APP ---
+if 'user_info' in st.session_state:
+    main_app()
+else:
+    show_login_page()
