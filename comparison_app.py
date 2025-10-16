@@ -151,9 +151,9 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
         if uploaded_transport_file:
             try:
                 if uploaded_transport_file.name.endswith('.csv'):
-                    df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=8)
+                    df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=7)
                 else:
-                    df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=8)
+                    df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=7)
                 
                 if df_transport_single.shape[1] > 10:
                     # Rename Booking ID from Column K (index 10)
@@ -169,9 +169,9 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
         if uploaded_express_file:
             try:
                 if uploaded_express_file.name.endswith('.csv'):
-                    df_express_single = pd.read_csv(uploaded_express_file, skiprows=8)
+                    df_express_single = pd.read_csv(uploaded_express_file, skiprows=7)
                 else:
-                    df_express_single = pd.read_excel(uploaded_express_file, skiprows=8)
+                    df_express_single = pd.read_excel(uploaded_express_file, skiprows=7)
 
                 if df_express_single.shape[1] > 9:
                     # Rename Booking ID from Column J (index 9)
@@ -421,137 +421,136 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
         with st.container(border=True):
             st.subheader("Bảng thống kê tổng hợp")
 
-            required_cols = {'Employee Name', 'Booking ID', 'Total Fare'}
-            if not required_cols.issubset(df_merged.columns):
-                st.warning("Không thể tạo bảng thống kê tổng hợp vì thiếu dữ liệu")
+            if 'Employee Name' not in df_merged.columns:
+                st.error("Không thể tạo bảng thống kê: Thiếu cột 'Employee Name' trong dữ liệu đã hợp nhất.")
             else:
-                agg_dict = {'So chuyen': ('Booking ID', 'count'), 'Tong tien (VND)': ('Total Fare', 'sum')}
-                summary_df = (
-                    df_merged
-                    .groupby('Employee Name')
-                    .agg(**agg_dict)
-                    .reset_index()
-                    .sort_values('Tong tien (VND)', ascending=False)
-                    .reset_index(drop=True)
-                )
+                agg_dict = {}
+                if 'Booking ID' in df_merged.columns:
+                    agg_dict['So chuyen'] = ('Booking ID', 'count')
+                if 'Total Fare' in df_merged.columns:
+                    agg_dict['Tong tien (VND)'] = ('Total Fare', 'sum')
 
-                if summary_df.empty:
-                    st.info("Không có đủ dữ liệu để thống kê.")
+                if not agg_dict:
+                    st.warning("Không thể tạo bảng thống kê: Thiếu cả cột 'Booking ID' và 'Total Fare'.")
                 else:
-                    header_cols = st.columns([3, 1, 2])
-                    header_cols[0].markdown("Tên Người dùng")
-                    header_cols[1].markdown("Số chuyến")
-                    header_cols[2].markdown("Tổng tiền (VND)")
+                    summary_df = df_merged.groupby('Employee Name').agg(**agg_dict).reset_index()
 
-                    current_employees = summary_df['Employee Name'].tolist()
-                    expanded_state = st.session_state.setdefault("expanded_employees", {})
-                    stale_keys = [name for name in expanded_state.keys() if name not in current_employees]
-                    for name in stale_keys:
-                        del expanded_state[name]
-                    for name in current_employees:
-                        expanded_state.setdefault(name, False)
+                    if 'Tong tien (VND)' in summary_df.columns:
+                        summary_df = summary_df.sort_values('Tong tien (VND)', ascending=False).reset_index(drop=True)
+                    elif 'So chuyen' in summary_df.columns:
+                        summary_df = summary_df.sort_values('So chuyen', ascending=False).reset_index(drop=True)
 
-                    def toggle_employee_expansion(employee_name: str) -> None:
-                        state = st.session_state["expanded_employees"]
-                        state[employee_name] = not state.get(employee_name, False)
+                    if summary_df.empty:
+                        st.info("Không có đủ dữ liệu để thống kê.")
+                    else:
+                        display_cols_spec = {"Tên Người dùng": 3}
+                        if 'So chuyen' in summary_df.columns:
+                            display_cols_spec["Số chuyến"] = 1
+                        if 'Tong tien (VND)' in summary_df.columns:
+                            display_cols_spec["Tổng tiền (VND)"] = 2
 
-                    date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngay', 'Date & Time (GMT+7)']
-                    date_col_name = find_col(df_merged, date_cols)
-                    pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
-                    dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
+                        header_cols = st.columns(list(display_cols_spec.values()))
+                        for i, col_name in enumerate(display_cols_spec.keys()):
+                            header_cols[i].markdown(f"**{col_name}**")
 
-                    for idx, row in summary_df.iterrows():
-                        employee_name = row['Employee Name']
-                        expanded = st.session_state["expanded_employees"][employee_name]
-                        row_container = st.container()
-                        with row_container:
-                            row_cols = st.columns([3, 1, 2])
-                            with row_cols[0]:
-                                label = f"{'✅ ' if expanded else ''}{employee_name}"
-                                st.button(
-                                    label,
-                                    key=f"summary_row_{idx}",
-                                    use_container_width=True,
-                                    on_click=toggle_employee_expansion,
-                                    args=(employee_name,),
-                                )
-                            with row_cols[1]:
-                                st.write(int(row['So chuyen']))
-                            with row_cols[2]:
-                                st.write(f"{row['Tong tien (VND)']:,.0f}")
+                        current_employees = summary_df['Employee Name'].tolist()
+                        expanded_state = st.session_state.setdefault("expanded_employees", {})
+                        stale_keys = [name for name in expanded_state.keys() if name not in current_employees]
+                        for name in stale_keys:
+                            del expanded_state[name]
+                        for name in current_employees:
+                            expanded_state.setdefault(name, False)
 
-                        if st.session_state["expanded_employees"].get(employee_name):
-                            employee_df = df_merged[df_merged['Employee Name'] == employee_name]
-                            usage_date_col = 'NGAY_BOOKING' if 'NGAY_BOOKING' in employee_df.columns else date_col_name
-                            detail_cols = [
-                                'Employee Name',
-                                'Booking ID',
-                                pickup_col_name,
-                                dropoff_col_name,
-                                'GEMINI_NGAY_HD_INVOICE',
-                                'HINH_THUC_TT',
-                                'TIEN_TRC_THUE',
-                                'TIEN_THUE8',
-                                'TONG_TIEN',
-                                usage_date_col,
-                                'SO_HOA_DON',
-                            ]
-                            final_cols = [col for col in detail_cols if col and col in employee_df.columns]
+                        def toggle_employee_expansion(employee_name: str) -> None:
+                            state = st.session_state["expanded_employees"]
+                            state[employee_name] = not state.get(employee_name, False)
 
-                            detail_df = employee_df[final_cols].copy()
-                            detail_df.insert(0, "STT", range(1, len(detail_df) + 1))
-                            if 'SO_HOA_DON' in detail_df.columns:
-                                detail_df['SO_HOA_DON'] = (
-                                    detail_df['SO_HOA_DON']
-                                    .astype(str)
-                                    .str.split('_')
-                                    .str[0]
-                                    .replace('nan', '')
-                                )
+                        date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngay', 'Date & Time (GMT+7)']
+                        date_col_name = find_col(df_merged, date_cols)
+                        pickup_col_name = 'GEMINI_PICKUP_ADDRESS' if 'GEMINI_PICKUP_ADDRESS' in df_merged.columns else None
+                        dropoff_col_name = 'GEMINI_DROPOFF_ADDRESS' if 'GEMINI_DROPOFF_ADDRESS' in df_merged.columns else None
 
-                            rename_map = {
-                                'Employee Name': 'Người sử dụng',
-                                'Booking ID': 'Mã đặt chỗ',
-                                'GEMINI_PICKUP_ADDRESS': 'Điểm đón',
-                                'GEMINI_DROPOFF_ADDRESS': 'Điểm đến',
-                                'GEMINI_NGAY_HD_INVOICE': 'Ngày HĐ',
-                                'HINH_THUC_TT': 'Hình thức thanh toán',
-                                'TIEN_TRC_THUE': 'Tổng tiền trước thuế',
-                                'TIEN_THUE8': 'Tổng tiền thuế (8%)',
-                                'TONG_TIEN': 'Tổng tiền đã có thuế',
-                                'NGAY_BOOKING': 'Ngày sử dụng',
-                                'SO_HOA_DON': 'Số hóa đơn',
-                            }
-                            if usage_date_col and usage_date_col not in rename_map:
-                                rename_map[usage_date_col] = 'Ngày sử dụng'
-                            detail_df.rename(columns={k: v for k, v in rename_map.items() if k in detail_df.columns}, inplace=True)
-
-                            employee_display_col = rename_map.get('Employee Name', 'Employee Name')
-                            money_cols = [
-                                rename_map.get('TIEN_TRC_THUE', 'TIEN_TRC_THUE'),
-                                rename_map.get('TIEN_THUE8', 'TIEN_THUE8'),
-                                rename_map.get('TONG_TIEN', 'TONG_TIEN'),
-                            ]
-                            total_row = {col: "" for col in detail_df.columns}
-                            total_row['STT'] = ""
-                            if employee_display_col in total_row:
-                                total_row[employee_display_col] = 'Tổng cộng'
-                            for money_col in money_cols:
-                                if money_col in detail_df.columns:
-                                    numeric_values = pd.to_numeric(detail_df[money_col], errors='coerce')
-                                    total_row[money_col] = numeric_values.sum()
-                            detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
-
-                            for money_col in money_cols:
-                                if money_col in detail_df.columns:
-                                    numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
-                                    detail_df[money_col] = numeric_series.apply(
-                                        lambda value: f"{value:,.0f}" if pd.notna(value) else ""
+                        for idx, row in summary_df.iterrows():
+                            employee_name = row['Employee Name']
+                            expanded = st.session_state["expanded_employees"][employee_name]
+                            row_container = st.container()
+                            with row_container:
+                                row_cols = st.columns(list(display_cols_spec.values()))
+                                with row_cols[0]:
+                                    label = f"{'▼' if expanded else '►'} {employee_name}"
+                                    st.button(
+                                        label,
+                                        key=f"summary_row_{idx}",
+                                        use_container_width=True,
+                                        on_click=toggle_employee_expansion,
+                                        args=(employee_name,),
                                     )
+                                
+                                current_col_index = 1
+                                if 'So chuyen' in summary_df.columns:
+                                    with row_cols[current_col_index]:
+                                        st.write(int(row['So chuyen']))
+                                    current_col_index += 1
+                                if 'Tong tien (VND)' in summary_df.columns:
+                                    with row_cols[current_col_index]:
+                                        st.write(f"{row['Tong tien (VND)']:,.0f}")
 
-                            st.dataframe(detail_df, use_container_width=True, hide_index=True)
+                            if st.session_state["expanded_employees"].get(employee_name):
+                                employee_df = df_merged[df_merged['Employee Name'] == employee_name]
+                                usage_date_col = 'NGAY_BOOKING' if 'NGAY_BOOKING' in employee_df.columns else date_col_name
+                                detail_cols = [
+                                    'Employee Name', 'Booking ID', pickup_col_name, dropoff_col_name,
+                                    'GEMINI_NGAY_HD_INVOICE', 'HINH_THUC_TT', 'TIEN_TRC_THUE',
+                                    'TIEN_THUE8', 'TONG_TIEN', usage_date_col, 'SO_HOA_DON',
+                                ]
+                                final_cols = [col for col in detail_cols if col and col in employee_df.columns]
 
-                        st.markdown('<hr style="margin-top:0.25rem; margin-bottom:0.25rem;">', unsafe_allow_html=True)
+                                detail_df = employee_df[final_cols].copy()
+                                detail_df.insert(0, "STT", range(1, len(detail_df) + 1))
+                                if 'SO_HOA_DON' in detail_df.columns:
+                                    detail_df['SO_HOA_DON'] = detail_df['SO_HOA_DON'].astype(str).str.split('_').str[0].replace('nan', '')
+
+                                rename_map = {
+                                    'Employee Name': 'Người sử dụng', 'Booking ID': 'Mã đặt chỗ',
+                                    'GEMINI_PICKUP_ADDRESS': 'Điểm đón', 'GEMINI_DROPOFF_ADDRESS': 'Điểm đến',
+                                    'GEMINI_NGAY_HD_INVOICE': 'Ngày HĐ', 'HINH_THUC_TT': 'Hình thức thanh toán',
+                                    'TIEN_TRC_THUE': 'Tổng tiền trước thuế', 'TIEN_THUE8': 'Tổng tiền thuế (8%)',
+                                    'TONG_TIEN': 'Tổng tiền đã có thuế', 'NGAY_BOOKING': 'Ngày sử dụng',
+                                    'SO_HOA_DON': 'Số hóa đơn',
+                                }
+                                if usage_date_col and usage_date_col not in rename_map:
+                                    rename_map[usage_date_col] = 'Ngày sử dụng'
+                                detail_df.rename(columns={k: v for k, v in rename_map.items() if k in detail_df.columns}, inplace=True)
+
+                                employee_display_col = rename_map.get('Employee Name', 'Employee Name')
+                                money_cols = [
+                                    rename_map.get('TIEN_TRC_THUE', 'TIEN_TRC_THUE'),
+                                    rename_map.get('TIEN_THUE8', 'TIEN_THUE8'),
+                                    rename_map.get('TONG_TIEN', 'TONG_TIEN'),
+                                ]
+                                
+                                # Only add total row if there are money columns to sum
+                                if any(col in detail_df.columns for col in money_cols):
+                                    total_row = {col: "" for col in detail_df.columns}
+                                    total_row['STT'] = ""
+                                    if employee_display_col in total_row:
+                                        total_row[employee_display_col] = 'Tổng cộng'
+                                    for money_col in money_cols:
+                                        if money_col in detail_df.columns:
+                                            numeric_values = pd.to_numeric(detail_df[money_col], errors='coerce')
+                                            total_row[money_col] = numeric_values.sum()
+                                    detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
+
+                                for money_col in money_cols:
+                                    if money_col in detail_df.columns:
+                                        numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
+                                        detail_df[money_col] = numeric_series.apply(
+                                            lambda value: f"{value:,.0f}" if pd.notna(value) else ""
+                                        )
+
+                                st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+                            st.markdown('<hr style="margin-top:0.25rem; margin-bottom:0.25rem;">', unsafe_allow_html=True)
                 try:
                     date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
                     date_col_name = find_col(df_merged, date_cols)
@@ -675,25 +674,26 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
                                                     attachments = [{'data': excel_data_email, 'filename': excel_filename}]
         
                                                     # 2. Create zipped PDF attachments for each employee
-                                                    df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                                    if not df_unit_with_pdfs.empty:
-                                                        employee_groups = df_unit_with_pdfs.groupby('Employee Name')
-                                                        st.info(f"Đang tạo và đính kèm {len(employee_groups)} file .zip (chứa PDF) cho từng nhân viên...")
-                                                        for employee_name, employee_df in employee_groups:
-                                                            zip_buffer = io.BytesIO()
-                                                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                                for _, row in employee_df.iterrows():
-                                                                    if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
-                                                                        pdf_filename = os.path.basename(row['pdf_filename'])
-                                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
-                                                            
-                                                            safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                            zip_filename = f"{safe_employee_name}_pdf.zip"
-                                                            
-                                                            attachments.append({
-                                                                'data': zip_buffer.getvalue(),
-                                                                'filename': zip_filename
-                                                            })
+                                                    if 'pdf_content' in df_unit.columns:
+                                                        df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                                        if not df_unit_with_pdfs.empty:
+                                                            employee_groups = df_unit_with_pdfs.groupby('Employee Name')
+                                                            st.info(f"Đang tạo và đính kèm {len(employee_groups)} file .zip (chứa PDF) cho từng nhân viên...")
+                                                            for employee_name, employee_df in employee_groups:
+                                                                zip_buffer = io.BytesIO()
+                                                                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                                    for _, row in employee_df.iterrows():
+                                                                        if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                                            pdf_filename = os.path.basename(row['pdf_filename'])
+                                                                            zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                                
+                                                                safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                                zip_filename = f"{safe_employee_name}_pdf.zip"
+                                                                
+                                                                attachments.append({
+                                                                    'data': zip_buffer.getvalue(),
+                                                                    'filename': zip_filename
+                                                                })
         
                                                     # 2.1. Create zipped XML attachments for each employee
                                                     if 'xml_content' in df_unit.columns:
@@ -754,23 +754,24 @@ if (uploaded_transport_file is not None or uploaded_express_file is not None) an
                                                 attachments = [{'data': excel_data_email, 'filename': excel_filename}]
         
                                                 # 2. Create zipped PDF attachments for each employee in the unit
-                                                df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
-                                                if not df_unit_with_pdfs.empty:
-                                                    for employee_name, employee_df in df_unit_with_pdfs.groupby('Employee Name'):
-                                                        zip_buffer = io.BytesIO()
-                                                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
-                                                            for _, row in employee_df.iterrows():
-                                                                if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
-                                                                    pdf_filename = os.path.basename(row['pdf_filename'])
-                                                                    zip_f.writestr(pdf_filename, row['pdf_content'])
-                                                        
-                                                        safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
-                                                        zip_filename = f"{safe_employee_name}_pdf.zip"
-                                                        
-                                                        attachments.append({
-                                                            'data': zip_buffer.getvalue(),
-                                                            'filename': zip_filename
-                                                        })
+                                                if 'pdf_content' in df_unit.columns:
+                                                    df_unit_with_pdfs = df_unit[df_unit['pdf_content'].notna()]
+                                                    if not df_unit_with_pdfs.empty:
+                                                        for employee_name, employee_df in df_unit_with_pdfs.groupby('Employee Name'):
+                                                            zip_buffer = io.BytesIO()
+                                                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_f:
+                                                                for _, row in employee_df.iterrows():
+                                                                    if pd.notna(row['pdf_filename']) and pd.notna(row['pdf_content']):
+                                                                        pdf_filename = os.path.basename(row['pdf_filename'])
+                                                                        zip_f.writestr(pdf_filename, row['pdf_content'])
+                                                            
+                                                            safe_employee_name = "".join(c for c in str(employee_name) if c.isalnum() or c in (' ', '_')).rstrip()
+                                                            zip_filename = f"{safe_employee_name}_pdf.zip"
+                                                            
+                                                            attachments.append({
+                                                                'data': zip_buffer.getvalue(),
+                                                                'filename': zip_filename
+                                                            })
         
                                                 # 2.1. Create zipped XML attachments for each employee
                                                 if 'xml_content' in df_unit.columns:
