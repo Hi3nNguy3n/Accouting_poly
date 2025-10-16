@@ -59,15 +59,9 @@ def get_google_credentials(credentials_json_content):
                     del st.session_state['user_info']
                 return None, None
         else:
-            # Bắt đầu quy trình đăng nhập mới nếu không có credentials hợp lệ
-            try:
-                flow = InstalledAppFlow.from_client_config(
-                    json.loads(credentials_json_content), SCOPES)
-                creds = flow.run_local_server()
-                st.session_state['credentials'] = creds.to_json()
-            except Exception as e:
-                st.error(f"Lỗi trong quá trình xác thực: {e}")
-                return None, None
+            # If there are no valid credentials, just return None.
+            # The login page will handle the interactive login.
+            return None, None
 
     # Sau khi có credentials, lấy thông tin người dùng
     try:
@@ -107,15 +101,46 @@ def show_login_page():
         st.error(f"Không tìm thấy file `{CREDENTIALS_FILE}`. Vui lòng đảm bảo file này tồn tại trong thư mục.")
         st.stop()
 
-    if st.button("Đăng nhập với Google", use_container_width=True):
-        with st.spinner("Đang chuyển hướng đến trang đăng nhập của Google..."):
-            creds, user_info = get_google_credentials(credentials_json_content)
-            if creds and user_info:
-                st.success(f"Đăng nhập thành công! Xin chào, {user_info.get('name', 'bạn')}.")
-                st.rerun() # Tải lại trang để vào app chính
+    try:
+        flow = InstalledAppFlow.from_client_config(
+            json.loads(credentials_json_content), SCOPES)
+        flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+        auth_url, _ = flow.authorization_url(prompt='consent')
+
+        st.write("1. Nhấn vào đường link dưới đây để tới trang xác thực của Google:")
+        st.markdown(f'**[Link xác thực Google]({auth_url})**')
+        st.write("2. Sau khi xác thực, Google sẽ cung cấp cho bạn một mã. Hãy sao chép mã đó và dán vào ô dưới đây.")
+
+        auth_code = st.text_input('3. Dán mã xác thực vào đây')
+
+        if st.button("Hoàn tất đăng nhập", use_container_width=True):
+            if not auth_code:
+                st.warning("Vui lòng nhập mã xác thực.")
             else:
-                # Lỗi đã được hiển thị trong hàm get_google_credentials
-                pass
+                with st.spinner("Đang xác thực mã..."):
+                    try:
+                        flow.fetch_token(code=auth_code)
+                        creds = flow.credentials
+                        st.session_state['credentials'] = creds.to_json()
+
+                        # Now get user info
+                        service = build('oauth2', 'v2', credentials=creds)
+                        user_info = service.userinfo().get().execute()
+
+                        email = user_info.get('email', '').lower()
+                        if not email.endswith('@fpt.edu.vn'):
+                            st.error("Truy cập bị từ chối. Chỉ các tài khoản email FPT (@fpt.edu.vn) mới được phép đăng nhập.")
+                            if 'credentials' in st.session_state:
+                                del st.session_state['credentials']
+                        else:
+                            st.session_state['user_info'] = user_info
+                            st.success(f"Đăng nhập thành công! Xin chào, {user_info.get('name', 'bạn')}.")
+                            st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Lỗi khi lấy token: {e}")
+    except Exception as e:
+        st.error(f"Lỗi khi khởi tạo quy trình xác thực: {e}")
 
 def main_app():
     """Hàm chứa toàn bộ giao diện và logic của ứng dụng chính."""
