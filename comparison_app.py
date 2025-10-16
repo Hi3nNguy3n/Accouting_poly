@@ -18,6 +18,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import gspread
+from datetime import datetime
 
 # Cố gắng import pypdf và hướng dẫn cài đặt nếu thiếu
 try:
@@ -32,7 +34,8 @@ SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'openid',
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile'
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/spreadsheets'
 ]
 TOKEN_FILE = "token.json"
 CREDENTIALS_FILE = "credentials.json"
@@ -112,7 +115,7 @@ def show_login_page():
             creds, user_info = get_google_credentials(credentials_json_content)
             if creds and user_info:
                 st.success(f"Đăng nhập thành công! Xin chào, {user_info.get('name', 'bạn')}.")
-                st.experimental_rerun() # Tải lại trang để vào app chính
+                st.rerun()
             else:
                 # Lỗi đã được hiển thị trong hàm get_google_credentials
                 pass
@@ -132,7 +135,7 @@ def main_app():
             for key in keys_to_delete:
                 if key in st.session_state:
                     del st.session_state[key]
-            st.experimental_rerun()
+            st.rerun()
 
     st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
     st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
@@ -174,7 +177,7 @@ def main_app():
                     if uploaded_transport_file.name.endswith('.csv'):
                         df_transport_single = pd.read_csv(uploaded_transport_file, skiprows=7)
                     else:
-                        df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=7)
+                        df_transport_single = pd.read_excel(uploaded_transport_file, skiprows=7, engine='xlrd' if uploaded_transport_file.name.endswith('.xls') else 'openpyxl')
                     
                     if df_transport_single.shape[1] > 10:
                         # Rename Booking ID from Column K (index 10)
@@ -192,7 +195,7 @@ def main_app():
                     if uploaded_express_file.name.endswith('.csv'):
                         df_express_single = pd.read_csv(uploaded_express_file, skiprows=7)
                     else:
-                        df_express_single = pd.read_excel(uploaded_express_file, skiprows=7)
+                        df_express_single = pd.read_excel(uploaded_express_file, skiprows=7, engine='xlrd' if uploaded_express_file.name.endswith('.xls') else 'openpyxl')
 
                     if df_express_single.shape[1] > 9:
                         # Rename Booking ID from Column J (index 9)
@@ -219,7 +222,7 @@ def main_app():
                 except Exception:
                     df_invoice = pd.read_excel(uploaded_invoice_file, engine='xlrd')
             else:
-                df_invoice = pd.read_excel(uploaded_invoice_file)
+                df_invoice = pd.read_excel(uploaded_invoice_file, engine='openpyxl')
 
             df_transport.columns = df_transport.columns.str.strip()
             df_invoice.columns = df_invoice.columns.str.strip()
@@ -514,7 +517,7 @@ def main_app():
                                         current_col_index += 1
                                     if 'Tong tien (VND)' in summary_df.columns:
                                         with row_cols[current_col_index]:
-                                            st.write(f"{row['Tong tien (VND)']:, .0f}")
+                                            st.write(f"{row['Tong tien (VND)']:,.0f}")
 
                                 if st.session_state["expanded_employees"].get(employee_name):
                                     employee_df = df_merged[df_merged['Employee Name'] == employee_name]
@@ -566,7 +569,7 @@ def main_app():
                                         if money_col in detail_df.columns:
                                             numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
                                             detail_df[money_col] = numeric_series.apply(
-                                                lambda value: f"{value:, .0f}" if pd.notna(value) else ""
+                                                lambda value: f"{value:,.0f}" if pd.notna(value) else ""
                                             )
 
                                     st.dataframe(detail_df, use_container_width=True, hide_index=True)
@@ -742,8 +745,8 @@ def main_app():
                                                                 })
         
                                                     # 3. Send email
-                                                    subject = f"HOA DON GRAP"
-                                                    body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grap phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
+                                                    subject = f"HOA DON GRAB"
+                                                    body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grab phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
                                                     send_gmail_message(creds, to_field, subject, body, attachments)
                                                     st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
                                                 except Exception as e:
@@ -904,6 +907,25 @@ def send_gmail_message(credentials, to, subject, body, attachments=None):
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {'raw': encoded_message}
         send_message = (service.users().messages().send(userId="me", body=create_message).execute())
+
+        try:
+            user_info = st.session_state.get('user_info', {})
+            sender_name = user_info.get('name', 'Unknown')
+            sender_email = user_info.get('email', 'Unknown')
+            sent_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Authorize gspread with user's credentials
+            creds_json = json.loads(st.session_state['credentials'])
+            creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
+            gc = gspread.authorize(creds)
+
+            # Open the Google Sheet by ID
+            sheet = gc.open_by_key("1oKivICj7qcBUU_msMGU8BRDx_D55lelOIp9EdLYcV7g").sheet1
+
+            # Append the log entry
+            sheet.append_row([sender_name, sender_email, sent_time])
+        except Exception as e:
+            st.error(f"Lỗi khi ghi log vào Google Sheet: {e}")
     except HttpError as error:
         st.error(f"An error occurred while sending email: {error}")
         raise error
