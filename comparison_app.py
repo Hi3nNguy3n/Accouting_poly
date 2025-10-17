@@ -548,7 +548,7 @@ def main_app():
                                         current_col_index += 1
                                     if 'Tong tien (VND)' in summary_df.columns:
                                         with row_cols[current_col_index]:
-                                            st.write(f"{row['Tong tien (VND)']:, .0f}")
+                                            st.write(f"{row['Tong tien (VND)']:,.0f}")
 
                                 if st.session_state["expanded_employees"].get(employee_name):
                                     employee_df = df_merged[df_merged['Employee Name'] == employee_name]
@@ -600,7 +600,7 @@ def main_app():
                                         if money_col in detail_df.columns:
                                             numeric_series = pd.to_numeric(detail_df[money_col], errors='coerce')
                                             detail_df[money_col] = numeric_series.apply(
-                                                lambda value: f"{value:, .0f}" if pd.notna(value) else ""
+                                                lambda value: f"{value:,.0f}" if pd.notna(value) else ""
                                             )
 
                                     st.dataframe(detail_df, use_container_width=True, hide_index=True)
