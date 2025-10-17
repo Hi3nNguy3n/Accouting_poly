@@ -946,7 +946,7 @@ def send_gmail_message(credentials, to, subject, body, attachments=None):
         st.stop()
 
 # --- ĐIỂM BẮT ĐẦU CỦA APP ---
-if True:
+if 'user_info' in st.session_state:
     main_app()
 else:
     show_login_page()
