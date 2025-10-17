@@ -89,7 +89,7 @@ def get_google_credentials(credentials_json_content):
 def show_login_page():
     """Hiển thị trang đăng nhập và xử lý việc nhấn nút."""
     st.set_page_config(page_title="Đăng nhập", layout="centered", page_icon="🔑")
-    st.title("🔑 Đăng nhập đi cục dàng!")
+    st.title("HỆ THỐNG ĐỐI SOÁT DỮ LIỆU HÓA ĐƠN GRAB CHO CƠ SỞ")
     st.write("Vui lòng đăng nhập bằng tài khoản Google @fpt.edu.vn của bạn để tiếp tục.")
 
     # Tải credentials.json
@@ -168,7 +168,7 @@ def main_app():
                     del st.session_state[key]
             st.rerun()
 
-    st.title("📊 Đối chiếu dữ liệu Grab & Báo cáo PDF")
+    st.title("📊 HỆ THỐNG ĐỐI SOÁT DỮ LIỆU HÓA ĐƠN GRAB CHO CƠ SỞ")
     st.write("Tải lên các tệp của bạn để bắt đầu đối chiếu và xử lý.")
     st.caption("Copyright by LocTH5, Hiennm22 - BM UDPM")
 
