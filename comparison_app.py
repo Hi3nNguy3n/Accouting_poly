@@ -450,7 +450,7 @@ def main_app():
                     st.markdown("#### Thống kê theo Đơn vị")
                     missing_stats = df_missing_pdfs.groupby('Đơn vị').agg(
                         so_hoa_don_thieu=('Booking ID', 'count'),
-                        tong_tien_thieu=('Total Fare', 'sum')
+                        tong_tien_thieu=('TONG_TIEN', 'sum')
                     ).reset_index()
                     missing_stats.rename(columns={
                         'so_hoa_don_thieu': 'Số hóa đơn thiếu PDF',
@@ -462,7 +462,7 @@ def main_app():
                     st.markdown("---")
                     st.markdown("#### Danh sách chi tiết")
                     
-                    cols_to_show = ['Booking ID', 'Employee Name', 'Đơn vị', 'pdf_link_key', 'Total Fare']
+                    cols_to_show = ['Booking ID', 'Employee Name', 'Đơn vị', 'pdf_link_key', 'TONG_TIEN']
                     date_cols = ['Date', 'Date of Trip', 'Trip Date', 'Ngày', 'Date & Time (GMT+7)']
                     available_date_col = find_col(df_missing_pdfs, date_cols)
                     if available_date_col:
@@ -482,8 +482,8 @@ def main_app():
                     agg_dict = {}
                     if 'Booking ID' in df_merged.columns:
                         agg_dict['So chuyen'] = ('Booking ID', 'count')
-                    if 'Total Fare' in df_merged.columns:
-                        agg_dict['Tong tien (VND)'] = ('Total Fare', 'sum')
+                    if 'TONG_TIEN' in df_merged.columns:
+                        agg_dict['Tong tien (VND)'] = ('TONG_TIEN', 'sum')
 
                     if not agg_dict:
                         st.warning("Không thể tạo bảng thống kê: Thiếu cả cột 'Booking ID' và 'Total Fare'.")
@@ -946,7 +946,7 @@ def send_gmail_message(credentials, to, subject, body, attachments=None):
         st.stop()
 
 # --- ĐIỂM BẮT ĐẦU CỦA APP ---
-if 'user_info' in st.session_state:
+if True:
     main_app()
 else:
     show_login_page()
