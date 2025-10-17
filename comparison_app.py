@@ -776,8 +776,8 @@ def main_app():
                                                                 })
         
                                                     # 3. Send email
-                                                    subject = f"HOA DON GRAP"
-                                                    body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grap phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
+                                                    subject = f"HOA DON GRAB"
+                                                    body = f"Kính gửi Cơ sở {selected_unit_email},\n\nTrung tâm xin gửi hóa đơn Grab phát sinh trong kỳ. Cán bộ thanh toán cơ sở vui lòng xem các file bảng kê và hóa đơn (nếu có) được đính kèm trong email này và thực hiện hồ sơ thanh toán đúng hạn.\n\nMọi thông tin thắc mắc, xin vui lòng liên hệ: lientt3@fe.edu.vn\nĐây là hệ thống đối chiếu tự động, vui lòng không reply email.\n\nTrân trọng"
                                                     send_gmail_message(creds, to_field, subject, body, attachments)
                                                     st.success(f"✅ Đã gửi email thành công đến {to_field} cho đơn vị '{selected_unit_email}'.")
                                                 except Exception as e:
