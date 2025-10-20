@@ -625,12 +625,13 @@ def main_app():
                         end_date = df_merged['Date_dt'].max()
         
                         @st.cache_data
-                        def generate_bang_ke_excel(_df, s_date, e_date, _d_col, _p_col, _do_col):
+                        def generate_bang_ke_excel(_df, s_date, e_date, _d_col, _p_col, _do_col, unit_name):
                             from openpyxl import load_workbook
                             from openpyxl.styles import Font
                             template_path = "FileMau/BangKe.xlsx"
                             wb = load_workbook(template_path)
                             ws = wb.active
+                            ws['C2'] = unit_name
                             ws['C4'] = s_date.strftime('%d/%m/%Y') if pd.notna(s_date) else "N/A"
                             ws['C5'] = e_date.strftime('%d/%m/%Y') if pd.notna(e_date) else "N/A"
                             start_row = 8
@@ -726,7 +727,7 @@ def main_app():
                                                     df_unit = df_merged[df_merged[unit_col] == selected_unit_email]
                                                     
                                                     # 1. Create Excel attachment
-                                                    excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
+                                                    excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name, selected_unit_email)
                                                     safe_unit_name = "".join(c for c in str(selected_unit_email) if c.isalnum() or c in (' ', '_')).rstrip()
                                                     excel_filename = f"BangKe_{safe_unit_name}.xlsx"
                                                     attachments = [{'data': excel_data_email, 'filename': excel_filename}]
@@ -809,7 +810,7 @@ def main_app():
                                                 df_unit = df_merged[df_merged[unit_col] == unit]
                                                 
                                                 # 1. Create Excel attachment
-                                                excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name)
+                                                excel_data_email = generate_bang_ke_excel(df_unit, df_unit['Date_dt'].min(), df_unit['Date_dt'].max(), date_col_name, pickup_col_name, dropoff_col_name, unit)
                                                 safe_unit_name = "".join(c for c in str(unit) if c.isalnum() or c in (' ', '_')).rstrip()
                                                 excel_filename = f"BangKe_{safe_unit_name}.xlsx"
                                                 attachments = [{'data': excel_data_email, 'filename': excel_filename}]
