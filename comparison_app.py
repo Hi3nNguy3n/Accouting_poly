@@ -786,6 +786,27 @@ def main_app():
                             # --- BULK SEND ---
                             st.divider()
                             st.markdown("###### Gửi cho tất cả các đơn vị")
+
+                            with st.expander("Xem trước danh sách gửi hàng loạt"):
+                                if not unit_to_email_map:
+                                    st.warning("Không có dữ liệu email mapping để hiển thị.")
+                                else:
+                                    units_in_data = sorted(df_merged[unit_col].dropna().unique())
+                                    if not units_in_data:
+                                        st.info("Không có đơn vị nào trong dữ liệu để gửi email.")
+                                    else:
+                                        st.markdown("Hệ thống sẽ gửi email đến các đơn vị và địa chỉ sau:")
+                                        found_emails_count = 0
+                                        for unit in units_in_data:
+                                            emails = unit_to_email_map.get(unit)
+                                            if emails:
+                                                st.markdown(f"- **{unit}**: `{', '.join(emails)}`")
+                                                found_emails_count += 1
+                                            else:
+                                                st.markdown(f"- **{unit}**: <span style='color: red;'>Không tìm thấy email</span>", unsafe_allow_html=True)
+                                        
+                                        st.info(f"Tổng cộng: Sẽ gửi email cho **{found_emails_count}** trên tổng số **{len(units_in_data)}** đơn vị.")
+
                             if st.button("🚀 Gửi Email cho TẤT CẢ các đơn vị", use_container_width=True, key="send_all_emails_btn"):
                                 if not unit_to_email_map:
                                     st.error("Không thể gửi: Không tìm thấy dữ liệu email mapping. Vui lòng kiểm tra file 'FileMau/Tong hop _ Report.xlsx'.")
