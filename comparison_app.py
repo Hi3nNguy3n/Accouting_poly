@@ -697,7 +697,7 @@ def main_app():
                                 with open(MAPPING_FILE_PATH, "wb") as f:
                                     f.write(uploaded_email_mapping_file.getbuffer())
 
-                                st.success("Đã cập nhật và áp dụng file email mapping m��i thành công!")
+                                st.success("Đã cập nhật và áp dụng file email mới thành công!")
                                 
                             except Exception as e:
                                 st.error(f"Lỗi khi xử lý file mapping đã tải lên: {e}")
