@@ -683,21 +683,22 @@ def main_app():
 
                         if uploaded_email_mapping_file is not None:
                             try:
-                                # Read the uploaded file into a new dataframe
+                                # Đọc file vừa tải lên vào một dataframe mới
                                 new_mapping_df = pd.read_excel(uploaded_email_mapping_file)
                                 
-                                # Update the session state with the new dataframe
+                                # Cập nhật session state với dataframe mới để sử dụng cho các lần chạy sau
                                 st.session_state.mapping_df = new_mapping_df
                                 
-                                # Also overwrite the file on disk for persistence
-                                uploaded_email_mapping_file.seek(0) # Reset buffer position
+                                # Tạo lại các map email ngay lập tức để áp dụng trong lần chạy hiện tại
+                                employee_to_unit_map, unit_to_email_map = generate_maps_from_df(st.session_state.get('mapping_df'))
+                                
+                                # Ghi đè file trên đĩa để lưu thay đổi
+                                uploaded_email_mapping_file.seek(0) 
                                 with open(MAPPING_FILE_PATH, "wb") as f:
                                     f.write(uploaded_email_mapping_file.getbuffer())
 
-                                # Clear the uploader state and rerun to apply the new mapping everywhere
-                                del st.session_state.mapping_uploader
-                                st.success("Đã cập nhật file email mapping. Trang đang tải lại để áp dụng thay đổi...")
-                                st.rerun()
+                                st.success("Đã cập nhật và áp dụng file email mapping m��i thành công!")
+                                
                             except Exception as e:
                                 st.error(f"Lỗi khi xử lý file mapping đã tải lên: {e}")
         
