@@ -943,6 +943,8 @@ def generate_maps_from_df(df_mapping):
         
         # Create employee -> unit map
         df_name_map = df_mapping.dropna(subset=[name_col, unit_col])
+        # Xử lý các tên nhân viên bị trùng lặp, chỉ giữ lại bản ghi đầu tiên
+        df_name_map = df_name_map.drop_duplicates(subset=[name_col], keep='first')
         employee_to_unit_map = df_name_map.set_index(name_col)[unit_col].to_dict()
         
         # Create unit -> email map
