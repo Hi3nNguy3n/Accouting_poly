@@ -661,15 +661,21 @@ def main_app():
                         uploaded_email_mapping_file = st.file_uploader(
                             "Cập nhật File Email Mapping (tùy chọn)",
                             type=["xlsx", "xls"],
-                            help=f"Tải lên file Excel mới để cập nhật danh sách email. Nếu không tải, hệ thống sẽ dùng file mặc định. File tải lên sẽ ghi đè lên '{MAPPING_FILE_PATH}'."
+                            help=f"Tải lên file Excel mới để cập nhật danh sách email. Nếu không tải, hệ thống sẽ dùng file mặc định. File tải lên sẽ ghi đè lên '{MAPPING_FILE_PATH}'.",
+                            key="mapping_uploader" # Add a key to the widget
                         )
 
                         if uploaded_email_mapping_file is not None:
                             try:
+                                # Save the new file
                                 with open(MAPPING_FILE_PATH, "wb") as f:
                                     f.write(uploaded_email_mapping_file.getbuffer())
+                                
+                                # IMPORTANT: Clear the uploader's state to prevent an infinite loop of reruns.
+                                del st.session_state.mapping_uploader
+                                
+                                # Show success message and rerun the app to apply changes
                                 st.success(f"Đã cập nhật file email mapping '{MAPPING_FILE_PATH}'. Trang sẽ tự động tải lại để áp dụng thay đổi.")
-                                # Reload the mapping data by rerunning the script
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Lỗi khi cập nhật file Email Mapping: {e}")
