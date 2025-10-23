@@ -916,7 +916,10 @@ def load_mapping_data():
     2. Đơn vị -> List of Emails
     """
     try:
-        df_mapping = pd.read_excel("FileMau/Tong hop _ Report.xlsx")
+        # Read the file into bytes first to avoid potential caching issues
+        with open("FileMau/Tong hop _ Report.xlsx", "rb") as f:
+            excel_bytes = f.read()
+        df_mapping = pd.read_excel(io.BytesIO(excel_bytes))
         name_col = df_mapping.columns[1]
         email_col = df_mapping.columns[3]
         unit_col = df_mapping.columns[4]
