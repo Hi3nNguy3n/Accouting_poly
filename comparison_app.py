@@ -657,38 +657,35 @@ def main_app():
         
                         st.subheader("📧 Gửi Bảng Kê qua Email (bằng Gmail)")
         
+                        MAPPING_FILE_PATH = "FileMau/Tong hop _ Report.xlsx"
                         uploaded_email_mapping_file = st.file_uploader(
-                            "Tải file Email Mapping (bắt buộc để gửi mail)",
+                            "Cập nhật File Email Mapping (tùy chọn)",
                             type=["xlsx", "xls"],
-                            help="Tải lên file Excel chứa cột 'Đơn vị' và 'Email' để gửi bảng kê."
+                            help=f"Tải lên file Excel mới để cập nhật danh sách email. Nếu không tải, hệ thống sẽ dùng file mặc định. File tải lên sẽ ghi đè lên '{MAPPING_FILE_PATH}'."
                         )
-        
-                        # Read the mapping file as soon as it's uploaded
-                        unit_to_email_map_upload = None
+
                         if uploaded_email_mapping_file is not None:
                             try:
-                                uploaded_email_mapping_file.seek(0)
-                                df_email_map_upload = pd.read_excel(uploaded_email_mapping_file)
-                                email_col_upload = df_email_map_upload.columns[3]
-                                unit_col_upload = df_email_map_upload.columns[4]
-                                df_email_map_upload = df_email_map_upload.dropna(subset=[email_col_upload, unit_col_upload])
-                                unit_to_email_map_upload = df_email_map_upload.groupby(unit_col_upload)[email_col_upload].apply(lambda x: list(x.unique())).to_dict()
+                                with open(MAPPING_FILE_PATH, "wb") as f:
+                                    f.write(uploaded_email_mapping_file.getbuffer())
+                                st.success(f"Đã cập nhật file email mapping '{MAPPING_FILE_PATH}'. Trang sẽ tự động tải lại để áp dụng thay đổi.")
+                                # Reload the mapping data by rerunning the script
+                                st.rerun()
                             except Exception as e:
-                                st.error(f"Lỗi khi đọc file Email Mapping: {e}")
-                                # Leave map as None and the error will be handled below
+                                st.error(f"Lỗi khi cập nhật file Email Mapping: {e}")
         
                         with st.expander("Hướng dẫn & Tải file mẫu Email Mapping"):
-                            st.info("Để gửi email, bạn cần tải lên file Excel chứa thông tin email của các đơn vị. Bạn có thể tải file mẫu bên dưới để xem định dạng.")
+                            st.info("Để gửi email, bạn cần có file 'FileMau/Tong hop _ Report.xlsx' chứa thông tin email của các đơn vị. Bạn có thể tải file mẫu bên dưới để xem định dạng, hoặc tải lên file của riêng bạn ở trên để cập nhật.")
                             try:
-                                with open("FileMau/Tong hop _ Report.xlsx", "rb") as file:
+                                with open(MAPPING_FILE_PATH, "rb") as file:
                                     st.download_button(
-                                        label="📥 Tải file mẫu (Tong hop _ Report.xlsx)",
+                                        label=f"📥 Tải file mẫu ({os.path.basename(MAPPING_FILE_PATH)})",
                                         data=file,
-                                        file_name="Tong hop _ Report.xlsx",
+                                        file_name=os.path.basename(MAPPING_FILE_PATH),
                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                     )
                             except FileNotFoundError:
-                                st.error("Lỗi: Không tìm thấy file mẫu tại `FileMau/Tong hop _ Report.xlsx`.")
+                                st.error(f"Lỗi: Không tìm thấy file mapping tại `{MAPPING_FILE_PATH}`.")
         
                         if 'credentials_json_content' not in st.session_state:
                             st.warning("Vui lòng tải file `credentials.json` ở trên để kích hoạt chức năng gửi email.")
@@ -701,21 +698,23 @@ def main_app():
         
                             if selected_unit_email:
                                 # Display emails for the selected unit if the map is loaded
-                                if uploaded_email_mapping_file and unit_to_email_map_upload is not None:
-                                    recipient_emails_display = unit_to_email_map_upload.get(selected_unit_email, [])
+                                if unit_to_email_map:
+                                    recipient_emails_display = unit_to_email_map.get(selected_unit_email, [])
                                     if recipient_emails_display:
                                         st.info(f"Bảng kê cho '{selected_unit_email}' sẽ được gửi đến các địa chỉ sau:")
                                         st.markdown(f"**{', '.join(recipient_emails_display)}**")
                                     else:
-                                        st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}' trong file đã tải lên.")
+                                        st.warning(f"Không tìm thấy địa chỉ email cho đơn vị '{selected_unit_email}' trong file mapping.")
+                                else:
+                                    st.warning("Không có dữ liệu email mapping để hiển thị người nhận.")
         
                                 if st.button(f"📧 Gửi Email đến '{selected_unit_email}'", use_container_width=True, key="send_email_btn"):
-                                    if unit_to_email_map_upload is None:
-                                        st.error("Vui lòng tải lên file Email Mapping hợp lệ trước khi gửi.")
+                                    if not unit_to_email_map:
+                                        st.error("Không thể gửi: Không tìm thấy dữ liệu email mapping. Vui lòng kiểm tra file 'FileMau/Tong hop _ Report.xlsx'.")
                                     else:
-                                        recipient_emails = unit_to_email_map_upload.get(selected_unit_email, [])
+                                        recipient_emails = unit_to_email_map.get(selected_unit_email, [])
                                         if not recipient_emails:
-                                            st.error(f"Không thể gửi email: Không tìm thấy email cho đơn vị '{selected_unit_email}' trong file đã tải lên.")
+                                            st.error(f"Không thể gửi email: Không tìm thấy email cho đơn vị '{selected_unit_email}' trong file mapping.")
                                         else:
                                             to_field = ", ".join(recipient_emails)
                                             with st.spinner(f"Đang xác thực và gửi email đến {to_field}..."):
@@ -788,8 +787,8 @@ def main_app():
                             st.divider()
                             st.markdown("###### Gửi cho tất cả các đơn vị")
                             if st.button("🚀 Gửi Email cho TẤT CẢ các đơn vị", use_container_width=True, key="send_all_emails_btn"):
-                                if unit_to_email_map_upload is None:
-                                    st.error("Vui lòng tải lên file Email Mapping hợp lệ trước khi gửi.")
+                                if not unit_to_email_map:
+                                    st.error("Không thể gửi: Không tìm thấy dữ liệu email mapping. Vui lòng kiểm tra file 'FileMau/Tong hop _ Report.xlsx'.")
                                 else:
                                     with st.spinner("Bắt đầu quá trình gửi email hàng loạt..."):
                                         creds, _ = get_google_credentials(st.session_state.credentials_json_content)
@@ -802,9 +801,9 @@ def main_app():
                                         failed_units = []
                                         for i, unit in enumerate(units_to_email):
                                             progress_text = f"Đang xử lý: {unit} ({i+1}/{len(units_to_email)})"; progress_bar.progress((i + 1) / len(units_to_email), text=progress_text)
-                                            recipient_emails = unit_to_email_map_upload.get(unit, [])
+                                            recipient_emails = unit_to_email_map.get(unit, [])
                                             if not recipient_emails:
-                                                failed_units.append((unit, "Không tìm thấy email trong file mapping đã tải lên."))
+                                                failed_units.append((unit, "Không tìm thấy email trong file mapping."))
                                                 continue
                                             try:
                                                 df_unit = df_merged[df_merged[unit_col] == unit]
