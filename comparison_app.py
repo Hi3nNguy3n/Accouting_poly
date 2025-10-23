@@ -199,7 +199,23 @@ def main_app():
     # --- BẮT ĐẦU XỬ LÝ KHI CÓ ĐỦ FILE ---
     if (uploaded_transport_file is not None or uploaded_express_file is not None) and uploaded_invoice_file is not None:
         try:
-            employee_to_unit_map, unit_to_email_map = load_mapping_data()
+            # --- QUẢN LÝ VÀ TẢI DỮ LIỆU MAPPING ---
+            MAPPING_FILE_PATH = "FileMau/Tong hop _ Report.xlsx"
+            if 'mapping_df' not in st.session_state:
+                try:
+                    st.session_state.mapping_df = pd.read_excel(MAPPING_FILE_PATH)
+                except FileNotFoundError:
+                    st.error(f"Lỗi: Không tìm thấy file mapping quan trọng tại '{MAPPING_FILE_PATH}'. Vui lòng tải file lên.")
+                    st.session_state.mapping_df = None
+                except Exception as e:
+                    st.error(f"Lỗi khi đọc file mapping '{MAPPING_FILE_PATH}': {e}")
+                    st.session_state.mapping_df = None
+            
+            employee_to_unit_map, unit_to_email_map = generate_maps_from_df(st.session_state.get('mapping_df'))
+
+            if not employee_to_unit_map:
+                st.warning("Không thể tạo bản đồ 'nhân viên -> đơn vị' từ file mapping. Chức năng có thể bị ảnh hưởng.")
+            # --- KẾT THÚC TẢI DỮ LIỆU MAPPING ---
 
             # --- 1. ĐỌC VÀ LÀM SẠCH DỮ LIỆU GỐC ---
             source_dfs = []
@@ -661,24 +677,29 @@ def main_app():
                         uploaded_email_mapping_file = st.file_uploader(
                             "Cập nhật File Email Mapping (tùy chọn)",
                             type=["xlsx", "xls"],
-                            help=f"Tải lên file Excel mới để cập nhật danh sách email. Nếu không tải, hệ thống sẽ dùng file mặc định. File tải lên sẽ ghi đè lên '{MAPPING_FILE_PATH}'.",
-                            key="mapping_uploader" # Add a key to the widget
+                            help=f"Tải lên file Excel mới để cập nhật danh sách email. File mới sẽ được sử dụng ngay và ghi đè lên file mặc định '{MAPPING_FILE_PATH}' cho các lần chạy sau.",
+                            key="mapping_uploader"
                         )
 
                         if uploaded_email_mapping_file is not None:
                             try:
-                                # Save the new file
+                                # Read the uploaded file into a new dataframe
+                                new_mapping_df = pd.read_excel(uploaded_email_mapping_file)
+                                
+                                # Update the session state with the new dataframe
+                                st.session_state.mapping_df = new_mapping_df
+                                
+                                # Also overwrite the file on disk for persistence
+                                uploaded_email_mapping_file.seek(0) # Reset buffer position
                                 with open(MAPPING_FILE_PATH, "wb") as f:
                                     f.write(uploaded_email_mapping_file.getbuffer())
-                                
-                                # IMPORTANT: Clear the uploader's state to prevent an infinite loop of reruns.
+
+                                # Clear the uploader state and rerun to apply the new mapping everywhere
                                 del st.session_state.mapping_uploader
-                                
-                                # Show success message and rerun the app to apply changes
-                                st.success(f"Đã cập nhật file email mapping '{MAPPING_FILE_PATH}'. Trang sẽ tự động tải lại để áp dụng thay đổi.")
+                                st.success("Đã cập nhật file email mapping. Trang đang tải lại để áp dụng thay đổi...")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Lỗi khi cập nhật file Email Mapping: {e}")
+                                st.error(f"Lỗi khi xử lý file mapping đã tải lên: {e}")
         
                         with st.expander("Hướng dẫn & Tải file mẫu Email Mapping"):
                             st.info("Để gửi email, bạn cần có file 'FileMau/Tong hop _ Report.xlsx' chứa thông tin email của các đơn vị. Bạn có thể tải file mẫu bên dưới để xem định dạng, hoặc tải lên file của riêng bạn ở trên để cập nhật.")
@@ -910,34 +931,30 @@ def find_col(df, possibilities):
             return p
     return None
 
-def load_mapping_data():
-    """Đọc file Excel mapping và trả về 2 dictionaries:
-    1. Employee Name -> Đơn vị
-    2. Đơn vị -> List of Emails
-    """
+def generate_maps_from_df(df_mapping):
+    """Tạo các dictionary mapping từ một DataFrame."""
+    if df_mapping is None or df_mapping.empty:
+        return {}, {}
     try:
-        # Read the file into bytes first to avoid potential caching issues
-        with open("FileMau/Tong hop _ Report.xlsx", "rb") as f:
-            excel_bytes = f.read()
-        df_mapping = pd.read_excel(io.BytesIO(excel_bytes))
         name_col = df_mapping.columns[1]
         email_col = df_mapping.columns[3]
         unit_col = df_mapping.columns[4]
-        df_mapping = df_mapping.dropna(subset=[name_col, unit_col])
-        employee_to_unit_map = df_mapping.set_index(name_col)[unit_col].to_dict()
-        df_email_map = df_mapping.dropna(subset=[email_col])
-        # Group by unit and create a list of unique emails for each unit
+        
+        # Create employee -> unit map
+        df_name_map = df_mapping.dropna(subset=[name_col, unit_col])
+        employee_to_unit_map = df_name_map.set_index(name_col)[unit_col].to_dict()
+        
+        # Create unit -> email map
+        df_email_map = df_mapping.dropna(subset=[email_col, unit_col])
         unit_to_email_map = df_email_map.groupby(unit_col)[email_col].apply(lambda x: list(x.unique())).to_dict()
+        
         return employee_to_unit_map, unit_to_email_map
-    except FileNotFoundError:
-        st.error("Lỗi: Không tìm thấy file mapping 'FileMau/Tong hop _ Report.xlsx'. Vui lòng đảm bảo file tồn tại.")
-        st.stop()
     except IndexError:
-        st.error("Lỗi: File mapping 'Tong hop _ Report.xlsx' không có đủ 5 cột (để lấy cột B, D, và E).")
-        st.stop()
+        st.error("Lỗi: File mapping không có đủ 5 cột (cần các cột B, D, và E).")
+        return {}, {}
     except Exception as e:
-        st.error(f"Lỗi khi đọc file mapping: {e}")
-        st.stop()
+        st.error(f"Lỗi khi xử lý dữ liệu từ file mapping: {e}")
+        return {}, {}
 
 def send_gmail_message(credentials, to, subject, body, attachments=None):
     """Sends an email with multiple attachments using Gmail API."""
